@@ -46,3 +46,4 @@ SKU.belongsTo(SellerPortals, { foreignKey: 'salesPortalId', as: 'salesPortal' })
 module.exports = SKU;
 
 
+

@@ -200,3 +200,4 @@ const SellerPortalsList = () => {
 export default SellerPortalsList;
 
 
+

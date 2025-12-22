@@ -11,7 +11,6 @@ class FormulaEvaluator {
     this.sourceSheet = sourceSheet;
     this.workbook = worksheet.workbook || null; // Access workbook if available
     this.cache = {}; // Cache for evaluated cells to handle dependencies
-    this.missingSKUs = new Set(); // Track missing SKUs
   }
 
   /**
@@ -146,18 +145,7 @@ class FormulaEvaluator {
       }
 
       if (!foundRow) {
-        // Check if this is a SKU lookup (Source!$A:$C with colIndex 2 means FG column)
-        if (sheetName === 'Source' && startCol === 'A' && colIndex === 2 && lookupValue) {
-          // This is a SKU lookup that failed - track the missing SKU
-          const missingSKU = String(lookupValue).trim();
-          if (missingSKU) {
-            this.missingSKUs.add(missingSKU);
-            // Return empty string instead of 0 to indicate missing value
-            // This will prevent blank calculations
-            return '';
-          }
-        }
-        return 0; // VLOOKUP returns #N/A equivalent for other lookups
+        return 0; // VLOOKUP returns #N/A equivalent
       }
 
       // Get column index (convert 1-based to column letter)
@@ -1349,31 +1337,11 @@ async function processMacros(rawFileBuffer, skuFileBuffer, brandName, date) {
     // Read all data rows and evaluate formulas
     const process1Json = [];
     const lastRow = Math.min(ws.rowCount || 50000, 50000);
-    const missingSKUsSet = new Set();
-    
-    // Find SKU column number
-    let skuColNumber = null;
-    for (const [colNum, headerName] of Object.entries(columnMap)) {
-      if (headerName === 'Sku' || headerName === 'SKU') {
-        skuColNumber = parseInt(colNum);
-        break;
-      }
-    }
     
     for (let rowNum = 2; rowNum <= lastRow; rowNum++) {
       const row = ws.getRow(rowNum);
       const rowData = {};
       let hasData = false;
-      let rowHasError = false;
-      let skuValue = null;
-
-      // Get SKU value first if column exists
-      if (skuColNumber) {
-        const skuCell = row.getCell(skuColNumber);
-        if (skuCell && skuCell.value) {
-          skuValue = String(skuCell.value).trim();
-        }
-      }
 
       row.eachCell({ includeEmpty: false }, (cell, colNumber) => {
         const headerName = columnMap[colNumber];
@@ -1389,17 +1357,6 @@ async function processMacros(rawFileBuffer, skuFileBuffer, brandName, date) {
             cellValue = cell.value;
           }
           
-          // Check if this is FG column and has empty value (missing SKU)
-          if (headerName === 'FG' && (cellValue === '' || cellValue === null || cellValue === undefined)) {
-            // Track the missing SKU
-            if (skuValue) {
-              missingSKUsSet.add(skuValue);
-            }
-            rowHasError = true;
-            // Don't add this cell value - will skip row
-            return;
-          }
-          
           // Convert null/undefined to empty string (will be handled as 0 in pivot)
           if (cellValue === null || cellValue === undefined) {
             cellValue = '';
@@ -1410,18 +1367,10 @@ async function processMacros(rawFileBuffer, skuFileBuffer, brandName, date) {
         }
       });
 
-      // Only add row if it has some data and no missing SKU errors
-      if (hasData && !rowHasError) {
+      // Only add row if it has some data
+      if (hasData) {
         process1Json.push(rowData);
       }
-    }
-
-    // Check if we have missing SKUs
-    if (missingSKUsSet.size > 0 || evaluator.missingSKUs.size > 0) {
-      const allMissingSKUs = Array.from(new Set([...missingSKUsSet, ...evaluator.missingSKUs]));
-      const error = new Error(`Some SKUs are missing from the database: ${allMissingSKUs.join(', ')}`);
-      error.missingSKUs = allMissingSKUs;
-      throw error;
     }
 
     console.log(`Converted ${process1Json.length} rows to JSON`);
@@ -1459,12 +1408,6 @@ async function processMacros(rawFileBuffer, skuFileBuffer, brandName, date) {
       outputWorkbook // XLSX workbook with pivot and report
     };
   } catch (error) {
-    // Preserve missingSKUs if it exists in the error
-    if (error.missingSKUs) {
-      const newError = new Error(`Failed to process macros: ${error.message}`);
-      newError.missingSKUs = error.missingSKUs;
-      throw newError;
-    }
     throw new Error(`Failed to process macros: ${error.message}`);
   }
 }

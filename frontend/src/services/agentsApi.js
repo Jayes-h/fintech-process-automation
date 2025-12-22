@@ -163,15 +163,13 @@ export const misDataApi = {
 };
 
 export const macrosApi = {
-  generateMacros: async (rawFile, brandId, sellerPortalId, date) => {
+  generateMacros: async (rawFile, skuFile, brandName, date, sellarPortal) => {
     const formData = new FormData();
     formData.append('rawFile', rawFile);
-    formData.append('brandId', brandId);
-    formData.append('sellerPortalId', sellerPortalId);
+    formData.append('skuFile', skuFile);
+    formData.append('brandName', brandName);
     formData.append('date', date);
-    
-    // Debug: Log what we're sending (skuId should NOT be included)
-    console.log('Generating macros with:', { brandId, sellerPortalId, date, hasRawFile: !!rawFile });
+    formData.append('sellarPortal', sellarPortal || '');
     
     const response = await api.post('/macros/generate', formData, {
       headers: {
@@ -211,129 +209,6 @@ export const macrosApi = {
   downloadPivot: async (fileId) => {
     const response = await api.get(`/macros/download/pivot/${fileId}`, {
       responseType: 'blob'
-    });
-    return response.data;
-  }
-};
-
-export const brandsApi = {
-  getAllBrands: async () => {
-    const response = await api.get('/brands');
-    return response.data;
-  },
-
-  getBrandById: async (id) => {
-    const response = await api.get(`/brands/${id}`);
-    return response.data;
-  },
-
-  createBrand: async (name) => {
-    const response = await api.post('/brands', { name });
-    return response.data;
-  },
-
-  updateBrand: async (id, name) => {
-    const response = await api.put(`/brands/${id}`, { name });
-    return response.data;
-  },
-
-  deleteBrand: async (id) => {
-    const response = await api.delete(`/brands/${id}`);
-    return response.data;
-  }
-};
-
-export const sellerPortalsApi = {
-  getAllSellerPortals: async () => {
-    const response = await api.get('/seller-portals');
-    return response.data;
-  },
-
-  getSellerPortalById: async (id) => {
-    const response = await api.get(`/seller-portals/${id}`);
-    return response.data;
-  },
-
-  createSellerPortal: async (name) => {
-    const response = await api.post('/seller-portals', { name });
-    return response.data;
-  },
-
-  updateSellerPortal: async (id, name) => {
-    const response = await api.put(`/seller-portals/${id}`, { name });
-    return response.data;
-  },
-
-  deleteSellerPortal: async (id) => {
-    const response = await api.delete(`/seller-portals/${id}`);
-    return response.data;
-  }
-};
-
-export const skuApi = {
-  getAllSKUs: async (brandId = null, salesPortalId = null) => {
-    const params = new URLSearchParams();
-    if (brandId) params.append('brandId', brandId);
-    if (salesPortalId) params.append('salesPortalId', salesPortalId);
-    const url = params.toString() ? `/sku?${params.toString()}` : '/sku';
-    const response = await api.get(url);
-    return response.data;
-  },
-
-  getSKUById: async (id) => {
-    const response = await api.get(`/sku/${id}`);
-    return response.data;
-  },
-
-  getSKUsByBrand: async (brandId) => {
-    const response = await api.get(`/sku/brand/${brandId}`);
-    return response.data;
-  },
-
-  createSKU: async (brandId, salesPortalId, salesPortalSku, tallyNewSku) => {
-    const response = await api.post('/sku', {
-      brandId,
-      salesPortalId,
-      salesPortalSku,
-      tallyNewSku
-    });
-    return response.data;
-  },
-
-  bulkCreateSKUs: async (brandId, salesPortalId, skus) => {
-    const response = await api.post('/sku/bulk', {
-      brandId,
-      salesPortalId,
-      skus
-    });
-    return response.data;
-  },
-
-  updateSKU: async (id, brandId, salesPortalId, salesPortalSku, tallyNewSku) => {
-    const response = await api.put(`/sku/${id}`, {
-      brandId,
-      salesPortalId,
-      salesPortalSku,
-      tallyNewSku
-    });
-    return response.data;
-  },
-
-  deleteSKU: async (id) => {
-    const response = await api.delete(`/sku/${id}`);
-    return response.data;
-  },
-
-  uploadSKUFile: async (brandId, salesPortalId, file) => {
-    const formData = new FormData();
-    formData.append('file', file);
-    formData.append('brandId', brandId);
-    formData.append('salesPortalId', salesPortalId);
-    
-    const response = await api.post('/sku/upload', formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data'
-      }
     });
     return response.data;
   }
