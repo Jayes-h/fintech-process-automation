@@ -1,0 +1,41 @@
+.mis-generator-page {
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.mis-generator-page .nav-tabs {
+  border-bottom: 2px solid var(--colonel-primary);
+}
+
+.mis-generator-page .nav-tabs .nav-link {
+  color: #6c757d;
+  border: none;
+  border-bottom: 3px solid transparent;
+  padding: 0.75rem 1.5rem;
+}
+
+.mis-generator-page .nav-tabs .nav-link:hover {
+  border-color: var(--colonel-accent);
+  color: var(--colonel-primary);
+}
+
+.mis-generator-page .nav-tabs .nav-link.active {
+  color: var(--colonel-primary);
+  background-color: transparent;
+  border-color: var(--colonel-primary);
+  font-weight: 600;
+}
+
+.mis-generator-page .nav-tabs .nav-link:disabled {
+  color: #adb5bd;
+  cursor: not-allowed;
+}
+
+
+
+
+
+
+
+
+

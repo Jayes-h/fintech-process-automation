@@ -1,0 +1,22 @@
+.mis-summary {
+  margin-top: 2rem;
+}
+
+.mis-summary .table {
+  font-size: 0.9rem;
+}
+
+.mis-summary th {
+  background-color: var(--colonel-accent);
+  color: var(--colonel-primary);
+  font-weight: 600;
+}
+
+
+
+
+
+
+
+
+

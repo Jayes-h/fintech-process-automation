@@ -1,0 +1,82 @@
+# Dependencies
+node_modules/
+/.pnp
+.pnp.js
+
+# Testing
+/coverage
+
+# Production
+/build
+/dist
+
+# Misc
+.DS_Store
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Database
+*.sqlite
+*.db
+
+# OS
+Thumbs.db
+
+#outputs
+outputs/
+
+#prompt readme
+prompt_readme.md
+Agent_Setup_Complete.md
+PROJECT_SUMMARY.md
+SETUP.md
+README.md
+MISC_Agent_Setup_Complete.md
+MIS_Database_Setup_Complete.md
+Updates_Complete.md
+updatedInProject.md
+UPDATES_COMPLETE.md
+UPDATES_IN_PROGRESS.md
+UPDATES_IN_PROGRESS.md
+Database_Setup_Complete.md
+Database_Setup_In_Progress.md
+Database_Setup_In_Progress.md
+MTR_B2C_Agent_Setup_Complete.md
+MTR_B2C_October_Updates.md
+MTR_B2C_October_Updates.md
+MIS_DATA_TABLE_IMPLEMENTATION.md
+Projectdoc_updates_implemented.md
+Projectdoc_updates_pending.md
+Projectdoc_updates_pending.md
+RESTART_SERVER_INSTRUCTIONS.md
+projectDoc.md
+projectDoc
+macrosdoc.md
+macrospivot.md
+
+
+#mis reference
+misReference.js
+
+
+
+
+
+
+

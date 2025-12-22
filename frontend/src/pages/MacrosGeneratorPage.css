@@ -1,0 +1,53 @@
+.macros-generator-page {
+  min-height: 100vh;
+}
+
+.files-list {
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+/* Ensure error modals appear above ALL modals */
+/* React-Bootstrap modals use portals, so we need to target the modal container */
+.no-sku-error-modal,
+.missing-sku-error-modal,
+.add-missing-sku-modal {
+  z-index: 1080 !important;
+}
+
+.no-sku-error-modal-dialog,
+.missing-sku-error-modal .modal-dialog,
+.add-missing-sku-modal .modal-dialog {
+  z-index: 1081 !important;
+  position: relative;
+}
+
+.no-sku-error-modal .modal-content,
+.missing-sku-error-modal .modal-content,
+.add-missing-sku-modal .modal-content {
+  z-index: 1082 !important;
+}
+
+.no-sku-error-modal .modal-backdrop,
+.missing-sku-error-modal .modal-backdrop,
+.add-missing-sku-modal .modal-backdrop {
+  z-index: 1079 !important;
+}
+
+/* Target the modal container in the portal */
+body > .no-sku-error-modal,
+body > .missing-sku-error-modal,
+body > .add-missing-sku-modal {
+  z-index: 1080 !important;
+}
+
+/* Ensure modal backdrop appears correctly */
+.modal-backdrop.show + .no-sku-error-modal,
+.modal-backdrop.show + .missing-sku-error-modal,
+.modal-backdrop.show + .add-missing-sku-modal {
+  z-index: 1080 !important;
+}
+
+
+
+

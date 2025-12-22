@@ -1,0 +1,41 @@
+.mis-file-card {
+  transition: all 0.3s ease;
+  border: 1px solid #e0e0e0;
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  cursor: pointer;
+}
+
+.mis-file-card:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 8px 16px rgba(47, 85, 151, 0.2);
+  border-color: var(--colonel-primary);
+}
+
+.mis-file-info {
+  font-size: 0.9rem;
+}
+
+.mis-file-info .info-item {
+  margin-bottom: 0.5rem;
+  color: #6c757d;
+}
+
+.mis-file-info .info-item strong {
+  color: var(--colonel-primary);
+  margin-right: 0.5rem;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+

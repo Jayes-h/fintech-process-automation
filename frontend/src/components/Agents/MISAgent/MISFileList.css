@@ -1,0 +1,22 @@
+.mis-file-list {
+  margin-top: 2rem;
+}
+
+.mis-file-list .table {
+  font-size: 0.9rem;
+}
+
+.mis-file-list th {
+  background-color: var(--colonel-accent);
+  color: var(--colonel-primary);
+  font-weight: 600;
+}
+
+
+
+
+
+
+
+
+

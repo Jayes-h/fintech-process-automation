@@ -1,0 +1,24 @@
+.colonel-header {
+  background: linear-gradient(135deg, #2F5597 0%, #1F4E78 100%);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  padding: 1rem 0;
+}
+
+.colonel-logo {
+  font-size: 1.5rem;
+  margin-right: 0.5rem;
+}
+
+.main-content {
+  min-height: calc(100vh - 76px);
+  padding: 2rem 0;
+}
+
+
+
+
+
+
+
+
+

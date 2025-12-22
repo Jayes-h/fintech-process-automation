@@ -1,0 +1,74 @@
+.mis-format-editor {
+  background: white;
+  padding: 1.5rem;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.mis-format-editor .table-responsive {
+  position: relative;
+  /* Keep overflow-x for horizontal scrolling, but allow dropdown to overflow vertically */
+  overflow-x: auto;
+  overflow-y: visible;
+}
+
+.mis-format-editor table {
+  position: relative;
+}
+
+.mis-format-editor tbody tr {
+  position: relative;
+}
+
+.formula-help {
+  position: relative;
+  z-index: 1 !important;
+}
+
+.formula-help code {
+  background: #f8f9fa;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.9em;
+}
+
+.suggestions-dropdown {
+  position: absolute !important;
+  top: 100% !important;
+  left: 0 !important;
+  right: 0 !important;
+  background: white !important;
+  border: 1px solid #ced4da !important;
+  border-radius: 4px !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15) !important;
+  z-index: 10000 !important;
+  max-height: 200px;
+  overflow-y: auto;
+  margin-top: 2px;
+  min-width: 100%;
+}
+
+/* Ensure the table cell with suggestions has proper stacking context */
+.mis-format-editor td[style*="position: relative"] {
+  position: relative !important;
+  z-index: 1;
+}
+
+.mis-format-editor td[style*="position: relative"]:has(.suggestions-dropdown) {
+  z-index: 10;
+}
+
+.suggestion-item {
+  padding: 8px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.suggestion-item:hover {
+  background-color: #f8f9fa;
+}
+
+.suggestion-item:last-child {
+  border-bottom: none;
+}
+
