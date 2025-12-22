@@ -21,4 +21,3 @@ const SellerPortals = sequelize.define('SellerPortals', {
 module.exports = SellerPortals;
 
 
-

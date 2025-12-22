@@ -21,4 +21,3 @@ const Brands = sequelize.define('Brands', {
 module.exports = Brands;
 
 
-

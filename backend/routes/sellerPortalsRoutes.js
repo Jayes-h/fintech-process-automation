@@ -20,4 +20,3 @@ router.delete('/:id', sellerPortalsController.deleteSellerPortal);
 module.exports = router;
 
 
-
