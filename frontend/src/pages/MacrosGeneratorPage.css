@@ -2,13 +2,46 @@
   min-height: 100vh;
 }
 
+.seller-portal-card {
+  transition: all 0.3s ease;
+  border: 1px solid #dee2e6;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.seller-portal-card:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  border-color: #2F5597;
+}
+
+.seller-portal-card .card-body {
+  padding: 1.25rem;
+}
+
+.seller-portal-actions {
+  margin-top: auto;
+}
+
+.seller-portal-actions .btn {
+  font-size: 0.85rem;
+  padding: 0.375rem 0.5rem;
+  white-space: nowrap;
+}
+
 .files-list {
-  max-height: 400px;
+  max-height: 600px;
   overflow-y: auto;
 }
 
+.files-list .card {
+  border-left: 3px solid #2F5597;
+}
+
+.files-list .card:hover {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
 /* Ensure error modals appear above ALL modals */
-/* React-Bootstrap modals use portals, so we need to target the modal container */
 .no-sku-error-modal,
 .missing-sku-error-modal,
 .add-missing-sku-modal {
@@ -48,6 +81,55 @@ body > .add-missing-sku-modal {
   z-index: 1080 !important;
 }
 
+/* State Config Table Styles */
+.state-config-table {
+  width: 100%;
+}
 
+.state-config-table thead th {
+  background-color: #2F5597;
+  color: white;
+  font-weight: 600;
+  text-align: center;
+  padding: 12px;
+  border: 1px solid #1F4E78;
+}
 
+.state-config-table tbody td {
+  padding: 10px;
+  text-align: left;
+  vertical-align: middle;
+}
 
+.state-config-table tbody tr:hover {
+  background-color: #f8f9fa;
+}
+
+.state-config-table tbody tr:nth-child(even) {
+  background-color: #f8f9fa;
+}
+
+.state-config-table tbody tr:nth-child(even):hover {
+  background-color: #e9ecef;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .seller-portal-card .card-body {
+    padding: 1rem;
+  }
+  
+  .seller-portal-actions .btn {
+    font-size: 0.75rem;
+    padding: 0.25rem 0.4rem;
+  }
+
+  .state-config-table {
+    font-size: 0.875rem;
+  }
+
+  .state-config-table thead th,
+  .state-config-table tbody td {
+    padding: 8px;
+  }
+}

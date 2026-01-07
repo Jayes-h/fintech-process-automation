@@ -23,20 +23,29 @@ router.post('/generate',
 // Get all brands
 router.get('/brands', macrosController.getAllBrands);
 
-// Get files by seller portal name
+// Get files by seller portal name (with optional brandId query param)
 router.get('/brand/:sellerPortalName', macrosController.getFilesByBrand);
 
-// Get Process1 data by brandId, sellerPortalId and date
+// Get files by brandId and sellerPortalId
+router.get('/files/:brandId/:sellerPortalId', macrosController.getFilesByBrandAndPortal);
+
+// Get Amazon B2C Process1 data by brandId, sellerPortalId and date
 router.get('/process1/:brandId/:sellerPortalId/:date', macrosController.getProcess1Data);
 
-// Get Pivot data by brandId, sellerPortalId and date
+// Get Amazon B2C Pivot data by brandId, sellerPortalId and date
 router.get('/pivot/:brandId/:sellerPortalId/:date', macrosController.getPivotData);
 
-// Download Process1 file
+// Download Amazon B2C Process1 file
 router.get('/download/process1/:id', macrosController.downloadProcess1);
 
-// Download Pivot file
+// Download Amazon B2C Pivot file
 router.get('/download/pivot/:id', macrosController.downloadPivot);
+
+// Download combined Amazon B2C Process1 and Amazon B2C Pivot file (single Excel with two sheets)
+router.get('/download/combined/:id', macrosController.downloadCombined);
+
+// Delete macros file
+router.delete('/files/:id', macrosController.deleteMacrosFile);
 
 module.exports = router;
 

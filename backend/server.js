@@ -13,14 +13,20 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Serve static files for uploads
+const path = require('path');
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
 // Routes
 app.use('/api/agents', require('./routes/agentsRoutes'));
 app.use('/api/mis-agent', require('./routes/misAgentRoutes'));
 app.use('/api/mis-data', require('./routes/misDataRoutes'));
 app.use('/api/macros', require('./routes/macrosRoutes'));
+app.use('/api/macros-b2b', require('./routes/macrosRoutesAmazonB2B'));
 app.use('/api/brands', require('./routes/brandsRoutes'));
 app.use('/api/seller-portals', require('./routes/sellerPortalsRoutes'));
 app.use('/api/sku', require('./routes/skuRoutes'));
+app.use('/api/state-config', require('./routes/stateConfigRoutes'));
 
 // Health check
 app.get('/health', (req, res) => {

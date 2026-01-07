@@ -1,0 +1,2698 @@
+const ExcelJS = require('exceljs');
+const XLSX = require('xlsx-js-style');
+
+/**
+ * Formula Evaluator - Evaluates Excel formulas to actual values
+ * Handles: VLOOKUP, IF, arithmetic operations, cell references
+ */
+class FormulaEvaluator {
+  constructor(worksheet, sourceSheet) {
+    this.ws = worksheet;
+    this.sourceSheet = sourceSheet;
+    this.workbook = worksheet.workbook || null; // Access workbook if available
+    this.cache = {}; // Cache for evaluated cells to handle dependencies
+    this.missingSKUs = new Set(); // Track missing SKUs
+  }
+
+  /**
+   * Get cell value by column letter and row number
+   * @param {string} colLetter - Column letter (e.g., 'A', 'N', 'AA')
+   * @param {number} rowNum - Row number
+   * @returns {any} - Cell value
+   */
+  getCellValue(colLetter, rowNum) {
+    const cell = this.ws.getCell(`${colLetter}${rowNum}`);
+    
+    // If cell has a formula, evaluate it
+    if (cell.formula) {
+      const cacheKey = `${colLetter}${rowNum}`;
+      if (this.cache[cacheKey] !== undefined) {
+        return this.cache[cacheKey];
+      }
+      const result = this.evaluateFormula(cell.formula, rowNum);
+      this.cache[cacheKey] = result;
+      return result;
+    }
+    
+    // Return the cell value directly
+    return cell.value !== null && cell.value !== undefined ? cell.value : 0;
+  }
+
+  /**
+   * Evaluate a formula string
+   * @param {string} formula - Formula string (e.g., "VLOOKUP(N2,Source!$A:$C,2,FALSE)")
+   * @param {number} currentRow - Current row number for relative references
+   * @returns {any} - Evaluated result
+   */
+  evaluateFormula(formula, currentRow) {
+    if (!formula || typeof formula !== 'string') {
+      return 0;
+    }
+
+    const formulaUpper = formula.trim().toUpperCase();
+
+    // Handle VLOOKUP
+    if (formulaUpper.startsWith('VLOOKUP(')) {
+      return this.evaluateVLOOKUP(formula, currentRow);
+    }
+
+    // Handle IF
+    if (formulaUpper.startsWith('IF(')) {
+      return this.evaluateIF(formula, currentRow);
+    }
+
+    // Handle arithmetic operations (simple expressions like "A2+B2" or "A2-B2")
+    if (formula.match(/^[A-Z]+\d+[\+\-\*\/][A-Z]+\d+/)) {
+      return this.evaluateArithmetic(formula, currentRow);
+    }
+
+    // Handle complex arithmetic with multiple operations
+    if (formula.match(/[A-Z]+\d+/)) {
+      return this.evaluateComplexArithmetic(formula, currentRow);
+    }
+
+    // If we can't evaluate, return 0
+    // console.warn(`Could not evaluate formula: ${formula}`);
+    return 0;
+  }
+
+  /**
+   * Evaluate VLOOKUP formula
+   * VLOOKUP(lookup_value, table_array, col_index_num, [range_lookup])
+   * Example: VLOOKUP(N2,Source!$A:$C,2,FALSE)
+   */
+  evaluateVLOOKUP(formula, currentRow) {
+    try {
+      // Extract VLOOKUP parameters
+      const match = formula.match(/VLOOKUP\(([^,]+),([^,]+),(\d+),([^)]+)\)/i);
+      if (!match) {
+        return 0;
+      }
+
+      const lookupValueExpr = match[1].trim();
+      const tableRange = match[2].trim();
+      const colIndex = parseInt(match[3], 10);
+      const rangeLookup = match[4].trim().toUpperCase() === 'TRUE' || match[4].trim() === '1';
+
+      // Evaluate lookup value (could be a cell reference like N2)
+      let lookupValue = this.evaluateExpression(lookupValueExpr, currentRow);
+
+      // Parse table range (e.g., "Source!$A:$C")
+      const sourceMatch = tableRange.match(/([^!]+)!(\$?)([A-Z]+):(\$?)([A-Z]+)/i);
+      if (!sourceMatch) {
+        return 0;
+      }
+
+      const sheetName = sourceMatch[1].trim();
+      const startCol = sourceMatch[3].toUpperCase();
+      const endCol = sourceMatch[5].toUpperCase();
+
+      // Get source sheet
+      let sourceWs = this.sourceSheet;
+      if (sheetName !== 'Source' && this.workbook) {
+        sourceWs = this.workbook.getWorksheet(sheetName) || this.sourceSheet;
+      }
+
+      if (!sourceWs) {
+        return 0;
+      }
+
+      // Search in source sheet
+      let foundRow = null;
+      const maxRow = Math.min(sourceWs.rowCount || 1000, 1000);
+
+      for (let row = 1; row <= maxRow; row++) {
+        const cell = sourceWs.getCell(`${startCol}${row}`);
+        const cellValue = cell.value;
+        
+        if (cellValue !== null && cellValue !== undefined) {
+          const cellStr = String(cellValue).trim();
+          const lookupStr = String(lookupValue).trim();
+          
+          if (rangeLookup === false) {
+            // Exact match
+            if (cellStr === lookupStr) {
+              foundRow = row;
+              break;
+            }
+          } else {
+            // Approximate match (not commonly used, but handle it)
+            if (cellStr === lookupStr || parseFloat(cellStr) === parseFloat(lookupStr)) {
+              foundRow = row;
+              break;
+            }
+          }
+        }
+      }
+
+      if (!foundRow) {
+        // Check if this is a SKU lookup (Source!$A:$C with colIndex 2 means FG column)
+        if (sheetName === 'Source' && startCol === 'A' && colIndex === 2 && lookupValue) {
+          // This is a SKU lookup that failed - track the missing SKU
+          const missingSKU = String(lookupValue).trim();
+          if (missingSKU) {
+            this.missingSKUs.add(missingSKU);
+            // Return empty string instead of 0 to indicate missing value
+            // This will prevent blank calculations
+            return '';
+          }
+        }
+        return 0; // VLOOKUP returns #N/A equivalent for other lookups
+      }
+
+      // Get column index (convert 1-based to column letter)
+      const colLetter = this.getColumnLetterFromIndex(this.columnToIndex(startCol) + colIndex - 1);
+      const resultCell = sourceWs.getCell(`${colLetter}${foundRow}`);
+      
+      return resultCell.value !== null && resultCell.value !== undefined ? resultCell.value : 0;
+    } catch (error) {
+      // console.warn(`Error evaluating VLOOKUP: ${formula}`, error.message);
+      return 0;
+    }
+  }
+
+  /**
+   * Evaluate IF formula
+   * IF(condition, value_if_true, value_if_false)
+   * Example: IF(V2=Z2,(AU2)*AT2,0)
+   */
+  evaluateIF(formula, currentRow) {
+    try {
+      // Extract IF parameters - handle nested parentheses correctly
+      // Find the opening parenthesis after "IF"
+      const openParen = formula.indexOf('(');
+      if (openParen === -1) return 0;
+      
+      let depth = 0;
+      let params = [];
+      let currentParam = '';
+      let inQuotes = false;
+      
+      // Start after "IF("
+      for (let i = openParen + 1; i < formula.length; i++) {
+        const char = formula[i];
+        
+        // Handle quotes (for string literals, though we don't use them)
+        if (char === '"') {
+          inQuotes = !inQuotes;
+          currentParam += char;
+          continue;
+        }
+        
+        if (inQuotes) {
+          currentParam += char;
+          continue;
+        }
+        
+        if (char === '(') {
+          depth++;
+          currentParam += char;
+        } else if (char === ')') {
+          if (depth === 0) {
+            // This is the closing parenthesis of IF
+            if (currentParam.trim()) {
+              params.push(currentParam.trim());
+            }
+            break;
+          } else {
+            depth--;
+            currentParam += char;
+          }
+        } else if (char === ',' && depth === 0) {
+          // Comma at top level - parameter separator
+          params.push(currentParam.trim());
+          currentParam = '';
+        } else {
+          currentParam += char;
+        }
+      }
+
+      if (params.length < 3) {
+        return 0;
+      }
+
+      const condition = params[0];
+      const valueIfTrue = params[1];
+      const valueIfFalse = params[2];
+
+      // Evaluate condition
+      const conditionResult = this.evaluateCondition(condition, currentRow);
+
+      // Return appropriate value
+      if (conditionResult) {
+        return this.evaluateExpression(valueIfTrue, currentRow);
+      } else {
+        return this.evaluateExpression(valueIfFalse, currentRow);
+      }
+    } catch (error) {
+      // console.warn(`Error evaluating IF: ${formula}`, error.message);
+      return 0;
+    }
+  }
+
+  /**
+   * Evaluate condition (e.g., "V2=Z2" or "V2<>Z2")
+   */
+  evaluateCondition(condition, currentRow) {
+    condition = condition.trim();
+    
+    // Handle equality
+    if (condition.includes('=')) {
+      const parts = condition.split('=');
+      if (parts.length === 2) {
+        const left = this.evaluateExpression(parts[0].trim(), currentRow);
+        const right = this.evaluateExpression(parts[1].trim(), currentRow);
+        return String(left).trim() === String(right).trim();
+      }
+    }
+    
+    // Handle not equal
+    if (condition.includes('<>')) {
+      const parts = condition.split('<>');
+      if (parts.length === 2) {
+        const left = this.evaluateExpression(parts[0].trim(), currentRow);
+        const right = this.evaluateExpression(parts[1].trim(), currentRow);
+        return String(left).trim() !== String(right).trim();
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * Evaluate arithmetic expression (e.g., "A2+B2", "A2-B2", "(A2)*B2")
+   */
+  evaluateArithmetic(formula, currentRow) {
+    return this.evaluateComplexArithmetic(formula, currentRow);
+  }
+
+  /**
+   * Evaluate complex arithmetic with multiple operations
+   */
+  evaluateComplexArithmetic(formula, currentRow) {
+    try {
+      // Replace cell references with their values
+      let expression = formula;
+      const cellRefRegex = /([A-Z]+)(\d+)/g;
+      let match;
+      
+      while ((match = cellRefRegex.exec(formula)) !== null) {
+        const colLetter = match[1];
+        const rowNum = parseInt(match[2], 10);
+        const cellValue = this.getCellValue(colLetter, rowNum);
+        const numericValue = Number(cellValue) || 0;
+        expression = expression.replace(match[0], numericValue);
+      }
+
+      // Evaluate the expression safely
+      // Remove any remaining non-numeric, non-operator characters
+      expression = expression.replace(/[^0-9+\-*/().\s]/g, '');
+      
+      // Use Function constructor for safe evaluation (only numbers and operators)
+      if (/^[0-9+\-*/().\s]+$/.test(expression)) {
+        try {
+          return Function(`"use strict"; return (${expression})`)();
+        } catch (e) {
+          // console.warn(`Error evaluating arithmetic: ${expression}`, e.message);
+          return 0;
+        }
+      }
+      
+      return 0;
+    } catch (error) {
+      // console.warn(`Error in complex arithmetic: ${formula}`, error.message);
+      return 0;
+    }
+  }
+
+  /**
+   * Evaluate a general expression (could be cell reference, number, or formula)
+   */
+  evaluateExpression(expr, currentRow) {
+    expr = expr.trim();
+    
+    // If it's a number
+    if (/^-?\d+(\.\d+)?$/.test(expr)) {
+      return parseFloat(expr);
+    }
+    
+    // If it's a cell reference (e.g., "N2", "A2")
+    const cellRefMatch = expr.match(/^([A-Z]+)(\d+)$/i);
+    if (cellRefMatch) {
+      const colLetter = cellRefMatch[1].toUpperCase();
+      const rowNum = parseInt(cellRefMatch[2], 10);
+      return this.getCellValue(colLetter, rowNum);
+    }
+    
+    // If it contains cell references or arithmetic, evaluate as arithmetic
+    if (expr.match(/[A-Z]+\d+/) || expr.match(/[\+\-\*\/\(\)]/)) {
+      return this.evaluateComplexArithmetic(expr, currentRow);
+    }
+    
+    // If it's a formula function, evaluate it
+    if (expr.startsWith('=') || expr.match(/^[A-Z]+\(/)) {
+      return this.evaluateFormula(expr.replace(/^=/, ''), currentRow);
+    }
+    
+    return 0;
+  }
+
+  /**
+   * Convert column letter to index (A=0, B=1, ..., Z=25, AA=26, etc.)
+   */
+  columnToIndex(colLetter) {
+    let index = 0;
+    for (let i = 0; i < colLetter.length; i++) {
+      index = index * 26 + (colLetter.charCodeAt(i) - 64);
+    }
+    return index - 1;
+  }
+
+  /**
+   * Convert column index to letter (0=A, 1=B, ..., 25=Z, 26=AA, etc.)
+   */
+  getColumnLetterFromIndex(index) {
+    let result = '';
+    index++;
+    while (index > 0) {
+      index--;
+      result = String.fromCharCode(65 + (index % 26)) + result;
+      index = Math.floor(index / 26);
+    }
+    return result;
+  }
+
+  /**
+   * Evaluate all formulas in a row and return calculated values
+   * @param {number} rowNum - Row number to evaluate
+   * @returns {Object} - Object with column names and calculated values
+   */
+  evaluateRow(rowNum, columnMap) {
+    const rowData = {};
+    const row = this.ws.getRow(rowNum);
+    
+    row.eachCell({ includeEmpty: false }, (cell, colNumber) => {
+      const headerName = columnMap[colNumber];
+      if (headerName) {
+        if (cell.formula) {
+          // Evaluate formula
+          rowData[headerName] = this.getCellValue(this.getColumnLetterFromIndex(colNumber - 1), rowNum);
+        } else {
+          // Use direct value
+          rowData[headerName] = cell.value !== null && cell.value !== undefined ? cell.value : '';
+        }
+      }
+    });
+    
+    return rowData;
+  }
+}
+
+/**
+ * Find column index by header name
+ */
+function findColumnIndex(ws, headerName) {
+  const headerRow = ws.getRow(1);
+  for (let i = 1; i <= headerRow.cellCount; i++) {
+    const cellValue = headerRow.getCell(i).value;
+    if (cellValue && String(cellValue).trim() === headerName) {
+      return i;
+    }
+  }
+  throw new Error(`Header '${headerName}' not found`);
+}
+
+/**
+ * STEP 0: Filter rows by Transaction Type
+ * Only keep rows where Transaction Type = "Shipment" or "Refund"
+ * This MUST happen BEFORE any column insertion or formula application
+ * Uses Excel-style row deletion (bottom → top) to avoid index shifting
+ */
+function filterRowsByTransactionType(ws) {
+  // console.log('=== STEP 0: Filtering rows by Transaction Type ===');
+  
+  // Step 1: Find "Transaction Type" and "Quantity" columns dynamically (no hardcoded column letters)
+  const headerRow = ws.getRow(1);
+  let transactionTypeColIndex = null;
+  let quantityColIndex = null;
+  
+  for (let i = 1; i <= headerRow.cellCount; i++) {
+    const cellValue = headerRow.getCell(i).value;
+    if (cellValue) {
+      const cellStr = String(cellValue).trim();
+      // Case-insensitive match for "Transaction Type"
+      if (cellStr.toLowerCase() === 'transaction type') {
+        transactionTypeColIndex = i;
+      }
+      // Case-insensitive match for "Quantity"
+      if (cellStr.toLowerCase() === 'quantity') {
+        quantityColIndex = i;
+      }
+    }
+  }
+  
+  if (!transactionTypeColIndex) {
+    throw new Error('"Transaction Type" column not found in the raw file. Please ensure the column exists.');
+  }
+  
+  // console.log(`Found "Transaction Type" column at index ${transactionTypeColIndex}`);
+  
+  if (quantityColIndex) {
+    // console.log(`Found "Quantity" column at index ${quantityColIndex}`);
+  } else {
+    // console.warn('Warning: "Quantity" column not found. Refund quantity adjustment will be skipped.');
+  }
+  
+  // Get total row count
+  const totalRows = ws.rowCount || 1;
+  // console.log(`Total rows before filtering: ${totalRows}`);
+  
+  // Track statistics
+  let keptRows = 0;
+  let deletedRows = 0;
+  let refundQuantityAdjusted = 0;
+  const seenValues = {}; // Track what values we see for debugging
+  
+  // Step 2: Delete rows that are NOT Shipment or Refund
+  // Excel-style row deletion: iterate from bottom → top to avoid index shifting
+  for (let rowNum = totalRows; rowNum >= 2; rowNum--) {
+    const row = ws.getRow(rowNum);
+    
+    // Skip empty rows
+    if (!row || row.cellCount === 0) {
+      // Delete empty rows
+      ws.spliceRows(rowNum, 1);
+      deletedRows++;
+      continue;
+    }
+    
+    const transactionTypeCell = row.getCell(transactionTypeColIndex);
+    const transactionTypeValue = transactionTypeCell.value;
+    
+    // Convert to string, trim, and normalize (case-insensitive)
+    const transactionTypeStr = transactionTypeValue ? String(transactionTypeValue).trim() : '';
+    const transactionTypeNormalized = transactionTypeStr.toLowerCase();
+    
+    // Track seen values for debugging
+    if (transactionTypeStr) {
+      seenValues[transactionTypeStr] = (seenValues[transactionTypeStr] || 0) + 1;
+    }
+    
+    // Only keep rows where Transaction Type is "Shipment" or "Refund" (case-insensitive)
+    if (transactionTypeNormalized === 'shipment' || transactionTypeNormalized === 'refund') {
+      keptRows++;
+      
+      // If Transaction Type is "Refund", make Quantity negative
+      if (transactionTypeNormalized === 'refund' && quantityColIndex) {
+        const quantityCell = row.getCell(quantityColIndex);
+        const quantityValue = quantityCell.value;
+        
+        // Convert to number and make negative (if positive)
+        if (quantityValue !== null && quantityValue !== undefined) {
+          const numericQuantity = parseFloat(quantityValue);
+          if (!isNaN(numericQuantity) && numericQuantity > 0) {
+            // Make it negative
+            quantityCell.value = -Math.abs(numericQuantity);
+            refundQuantityAdjusted++;
+          }
+        }
+      }
+    } else {
+      // Delete this row - it's NOT Shipment or Refund
+      ws.spliceRows(rowNum, 1);
+      deletedRows++;
+    }
+  }
+  
+  // Log what values were found
+  // console.log('Transaction Type values found in file:', Object.keys(seenValues));
+  // console.log(`Filtered results: Kept ${keptRows} rows (Shipment/Refund), Deleted ${deletedRows} rows`);
+  // console.log(`Refund rows with Quantity made negative: ${refundQuantityAdjusted}`);
+  
+  if (keptRows === 0) {
+    throw new Error('No rows found with Transaction Type "Shipment" or "Refund". Please check your raw file.');
+  }
+  
+  // Verify the filtering worked
+  const remainingRows = ws.rowCount || 1;
+  // console.log(`Total rows after filtering: ${remainingRows} (should be ${keptRows + 1} including header)`);
+  
+  // console.log('✓ Transaction Type filtering completed successfully');
+  return keptRows;
+}
+
+/**
+ * Get column letter from index (1 = A, 2 = B, etc.)
+ */
+function getColumnLetter(colIndex) {
+  let result = '';
+  let num = colIndex;
+  while (num > 0) {
+    num--;
+    result = String.fromCharCode(65 + (num % 26)) + result;
+    num = Math.floor(num / 26);
+  }
+  return result;
+}
+
+/**
+ * STEP 1: Insert Columns & Rename Headers
+ * Using manual cell shifting approach for reliable column insertion
+ * Insert columns in reverse order (right to left) to avoid index shifting
+ */
+function insertColumnsAndRenameHeaders(workbook, sheetName) {
+  const ws = workbook.getWorksheet(sheetName);
+  if (!ws) {
+    throw new Error(`Sheet '${sheetName}' not found`);
+  }
+
+  // Get actual row and column counts (don't process more than necessary)
+  const maxRow = ws.rowCount || 1;
+  const maxCol = ws.columnCount || 200;
+
+  /**
+   * Helper function to manually insert a column by shifting cells
+   * This is more reliable than spliceColumns for ensuring proper column separation
+   */
+  const insertColumnAt = (colIndex, headerName) => {
+    // Shift all cells from colIndex onwards to the right
+    // Process from rightmost column backwards to avoid overwriting
+    for (let row = 1; row <= maxRow; row++) {
+      const currentRow = ws.getRow(row);
+      
+      // Shift cells from right to left (backwards) to avoid overwriting
+      for (let col = maxCol; col >= colIndex; col--) {
+        const sourceCell = currentRow.getCell(col);
+        const targetCell = currentRow.getCell(col + 1);
+        
+        // Check if source cell has any content (value, formula, or style)
+        const hasValue = sourceCell.value !== null && sourceCell.value !== undefined;
+        const hasFormula = sourceCell.formula !== null && sourceCell.formula !== undefined;
+        
+        if (hasValue || hasFormula) {
+          // Copy cell value
+          if (hasValue) {
+            targetCell.value = sourceCell.value;
+          }
+          // Copy formula if exists
+          if (hasFormula) {
+            targetCell.formula = sourceCell.formula;
+          }
+          // Copy style if exists (try-catch to handle style copying issues)
+          try {
+            if (sourceCell.style && Object.keys(sourceCell.style).length > 0) {
+              // Copy style properties individually to avoid deep cloning issues
+              const style = sourceCell.style;
+              if (style.font) targetCell.font = JSON.parse(JSON.stringify(style.font));
+              if (style.fill) targetCell.fill = JSON.parse(JSON.stringify(style.fill));
+              if (style.border) targetCell.border = JSON.parse(JSON.stringify(style.border));
+              if (style.alignment) targetCell.alignment = JSON.parse(JSON.stringify(style.alignment));
+            }
+          } catch (styleError) {
+            // Ignore style copying errors
+          }
+        }
+      }
+    }
+    
+    // Set the header in row 1, column colIndex
+    ws.getRow(1).getCell(colIndex).value = headerName;
+    // console.log(`Inserted column "${headerName}" at position ${colIndex}`);
+  };
+
+  // Insert columns in REVERSE ORDER (right to left) to avoid index shifting
+  // This ensures that previously found column indices remain valid
+
+
+  // 2. Insert 9 columns after "Compensatory Cess Tax"
+  // Insert them one at a time in reverse order to maintain positions
+  try {
+    const cessCol = findColumnIndex(ws, 'Compensatory Cess Tax');
+    const headers = [
+      'Final Tax rate',
+      'Final Taxable Sales Value',
+      'Final Taxable Shipping Value',
+      'Final CGST Tax',
+      'Final SGST Tax',
+      'Final IGST Tax',
+      'Final Shipping CGST Tax',
+      'Final Shipping SGST Tax',
+      'Final Shipping IGST Tax',
+      'Final Amount Receivable',
+    ];
+    // Insert from right to left (reverse order) so positions don't shift
+    for (let i = headers.length - 1; i >= 0; i--) {
+      insertColumnAt(cessCol + 1, headers[i]);
+    }
+    // console.log(`Inserted 9 columns after "Compensatory Cess Tax"`);
+  } catch (e) {
+    // console.warn('Could not insert columns after Compensatory Cess Tax:', e.message);
+  }
+
+  // 3. Insert 2 columns after "Ship To State"
+  try {
+    const shipToStateCol = findColumnIndex(ws, 'Ship To State');
+    // Insert in reverse order
+    insertColumnAt(shipToStateCol + 1, 'Final Invoice No.');
+    insertColumnAt(shipToStateCol + 1, 'Ship To State Tally Ledger');
+    // console.log(`Inserted 2 columns after "Ship To State"`);
+  } catch (e) {
+    // console.warn('Could not insert columns after Ship To State:', e.message);
+  }
+
+  // 4. Insert column after "Sku" last (leftmost)
+  try {
+    const skuCol = findColumnIndex(ws, 'Sku');
+    insertColumnAt(skuCol + 1, 'FG');
+    // console.log(`Inserted column "FG" after "Sku"`);
+  } catch (e) {
+    // console.warn('Could not insert column after Sku:', e.message);
+  }
+
+  return ws;
+}
+
+/**
+ * STEP 2: Apply Formulas to Ranges
+ * Formulas reference columns by their header names for reliability
+ */
+function applyFormulas(ws, sourceSheetName = 'Source') {
+  const lastRow = Math.min(ws.rowCount || 50000, 50000);
+
+  // Helper to safely find column and get letter
+  const getColLetter = (headerName) => {
+    try {
+      const colIndex = findColumnIndex(ws, headerName);
+      return getColumnLetter(colIndex);
+    } catch (e) {
+      return null;
+    }
+  };
+
+  // Find all required columns once
+  const colSku = getColLetter('Sku');
+  const colFG = getColLetter('FG');
+  const colShipToState = getColLetter('Ship To State');
+  const colShipToStateTally = getColLetter('Ship To State Tally Ledger');
+  const colFinalInvoiceNo = getColLetter('Final Invoice No.');
+  const colCgstRate = getColLetter('Cgst Rate');
+  const colSgstRate = getColLetter('Sgst Rate');
+  const colIgstRate = getColLetter('Igst Rate');
+  const colFinalTaxRate = getColLetter('Final Tax rate');
+  const colFinalTaxableSalesValue = getColLetter('Final Taxable Sales Value');
+  const colFinalTaxableShippingValue = getColLetter('Final Taxable Shipping Value');
+  const colFinalCGSTTax = getColLetter('Final CGST Tax');
+  const colFinalSGSTTax = getColLetter('Final SGST Tax');
+  const colFinalIGSTTax = getColLetter('Final IGST Tax');
+  const colFinalShippingCGSTTax = getColLetter('Final Shipping CGST Tax');
+  const colFinalShippingSGSTTax = getColLetter('Final Shipping SGST Tax');
+  const colFinalShippingIGSTTax = getColLetter('Final Shipping IGST Tax');
+  const colTcsCgstAmount = getColLetter('Tcs Cgst Amount');
+  const colTcsSgstAmount = getColLetter('Tcs Sgst Amount');
+  const colTcsIgstAmount = getColLetter('Tcs Igst Amount');
+  const colFinalAmountReceivable = getColLetter('Final Amount Receivable');
+  const colPrincipalAmount = getColLetter('Principal Amount');
+  const colShippingAmountBasis = getColLetter('Shipping Amount Basis');
+  const colGiftWrapAmountBasis = getColLetter('Gift Wrap Amount Basis');
+  const colGiftWrapPromoAmountBasis = getColLetter('Gift Wrap Promo Amount Basis');
+  const colShipFromState = getColLetter('Ship From State');
+  const colTaxExclusiveGross = getColLetter('Tax Exclusive Gross');
+
+
+  for (let row = 2; row <= lastRow; row++) {
+    try {
+      // Column FG (O): =VLOOKUP(Sku,Source!$A:$C,2,FALSE)
+      if (colSku && colFG) {
+        ws.getCell(`${colFG}${row}`).value = {
+          formula: `VLOOKUP(${colSku}${row},${sourceSheetName}!$A:$C,2,FALSE)`
+        };
+      }
+
+      // Column Ship To State Tally Ledger (AA): =VLOOKUP(Ship To State,Source!$F:$G,2,0)
+      if (colShipToState && colShipToStateTally) {
+        ws.getCell(`${colShipToStateTally}${row}`).value = {
+          formula: `VLOOKUP(${colShipToState}${row},${sourceSheetName}!$F:$G,2,0)`
+        };
+      }
+
+      // Column Final Invoice No. (AB): =VLOOKUP(Ship To State Tally Ledger,Source!$G$1:$H$37,2,FALSE)
+      if (colShipToStateTally && colFinalInvoiceNo) {
+        ws.getCell(`${colFinalInvoiceNo}${row}`).value = {
+          formula: `VLOOKUP(${colShipToStateTally}${row},${sourceSheetName}!$G$1:$H$37,2,FALSE)`
+        };
+      }
+
+      // Column Final Tax rate (AT): =Cgst Rate + Sgst Rate (or use Igst Rate if applicable)
+      // Based on VBA: =AH2+AK2, where AH is likely Cgst Rate and AK is Igst Rate
+      if (colFinalTaxRate && colCgstRate && colIgstRate) {
+        ws.getCell(`${colFinalTaxRate}${row}`).value = {
+          formula: `${colCgstRate}${row}+${colIgstRate}${row}`
+        };
+      }
+
+      // Column Final Taxable Shipping Value (AV): =Shipping Amount + Gift Wrap Amount + Item Promo Discount + Shipping Promo Discount
+      // Based on VBA: =BD+BK+BU+BX
+      // Calculate this FIRST before Final Taxable Sales Value (which depends on it)
+      if (colFinalTaxableShippingValue) {
+        const parts = [];
+        if (colShippingAmountBasis) parts.push(`${colShippingAmountBasis}${row}`);
+        if (colGiftWrapAmountBasis) parts.push(`${colGiftWrapAmountBasis}${row}`);
+        if (colGiftWrapPromoAmountBasis) parts.push(`${colGiftWrapPromoAmountBasis}${row}`);
+        // Try to find Shipping Promo Discount
+        try {
+          const colShippingPromoDiscount = getColLetter('Shipping Promo Discount Basis');
+          if (colShippingPromoDiscount) parts.push(`${colShippingPromoDiscount}${row}`);
+        } catch (e) {}
+        
+        if (parts.length > 0) {
+          ws.getCell(`${colFinalTaxableShippingValue}${row}`).value = {
+            formula: parts.join('+')
+          };
+        }
+      }
+
+      // Column Final Taxable Sales Value (AU): =Principal Amount - Final Taxable Shipping Value
+      // Based on VBA: =AF2-AV2, where AF is Principal Amount and AV is Final Taxable Shipping Value
+      // This depends on Final Taxable Shipping Value, so calculate it after
+      if (colFinalTaxableSalesValue && colTaxExclusiveGross && colFinalTaxableShippingValue) {
+        ws.getCell(`${colFinalTaxableSalesValue}${row}`).value = {
+          formula: `${colTaxExclusiveGross}${row}-${colFinalTaxableShippingValue}${row}`
+        };
+      }
+
+      // Column Final CGST Tax (AW): =IF(Ship From State = Ship To State, (Final Taxable Sales Value) * Final Tax rate, 0)
+      // Based on VBA: =IF(V2=Z2,(AU2)*AT2,0)
+      if (colFinalCGSTTax && colShipFromState && colShipToState && colFinalTaxableSalesValue && colFinalTaxRate) {
+        ws.getCell(`${colFinalCGSTTax}${row}`).value = {
+          formula: `IF(${colShipFromState}${row}=${colShipToState}${row},(${colFinalTaxableSalesValue}${row})*${colFinalTaxRate}${row},0)`
+        };
+      }
+
+      // Column Final SGST Tax (AX): same as Final CGST Tax
+      if (colFinalSGSTTax && colShipFromState && colShipToState && colFinalTaxableSalesValue && colFinalTaxRate) {
+        ws.getCell(`${colFinalSGSTTax}${row}`).value = {
+          formula: `IF(${colShipFromState}${row}=${colShipToState}${row},(${colFinalTaxableSalesValue}${row})*${colFinalTaxRate}${row},0)`
+        };
+      }
+
+      // Column Final IGST Tax (AY): =IF(Ship From State <> Ship To State, (Final Taxable Sales Value) * Final Tax rate, 0)
+      // Based on VBA: =IF(V2<>Z2,(AU2)*AT2,0)
+      if (colFinalIGSTTax && colShipFromState && colShipToState && colFinalTaxableSalesValue && colFinalTaxRate) {
+        ws.getCell(`${colFinalIGSTTax}${row}`).value = {
+          formula: `IF(${colShipFromState}${row}<>${colShipToState}${row},(${colFinalTaxableSalesValue}${row})*${colFinalTaxRate}${row},0)`
+        };
+      }
+
+      // Column Final Shipping CGST Tax (AZ): =IF(Ship From State = Ship To State, (Final Taxable Shipping Value) * Final Tax rate, 0)
+      // Based on VBA: =IF(V2=Z2,(AV2)*AT2,0)
+      if (colFinalShippingCGSTTax && colShipFromState && colShipToState && colFinalTaxableShippingValue && colFinalTaxRate) {
+        ws.getCell(`${colFinalShippingCGSTTax}${row}`).value = {
+          formula: `IF(${colShipFromState}${row}=${colShipToState}${row},(${colFinalTaxableShippingValue}${row})*${colFinalTaxRate}${row},0)`
+        };
+      }
+
+      // Column Final Shipping SGST Tax (BA): same as Final Shipping CGST Tax
+      if (colFinalShippingSGSTTax && colShipFromState && colShipToState && colFinalTaxableShippingValue && colFinalTaxRate) {
+        ws.getCell(`${colFinalShippingSGSTTax}${row}`).value = {
+          formula: `IF(${colShipFromState}${row}=${colShipToState}${row},(${colFinalTaxableShippingValue}${row})*${colFinalTaxRate}${row},0)`
+        };
+      }
+
+      // Column Final Shipping IGST Tax (BB): =IF(Ship From State <> Ship To State, (Final Taxable Shipping Value) * Final Tax rate, 0)
+      // Based on VBA: same as AY but for shipping
+      if (colFinalShippingIGSTTax && colShipFromState && colShipToState && colFinalTaxableShippingValue && colFinalTaxRate) {
+        ws.getCell(`${colFinalShippingIGSTTax}${row}`).value = {
+          formula: `IF(${colShipFromState}${row}<>${colShipToState}${row},(${colFinalTaxableShippingValue}${row})*${colFinalTaxRate}${row},0)`
+        };
+      }
+
+      // Column Final Amount Receivable (CH): 
+      // Formula: AU+AV+AW+AX+AY+AZ+BA+BB-CA-CC-CG
+      // Where:
+      // AU = Final Taxable Sales Value
+      // AV = Final Taxable Shipping Value
+      // AW = Final CGST Tax
+      // AX = Final SGST Tax
+      // AY = Final IGST Tax
+      // AZ = Final Shipping CGST Tax
+      // BA = Final Shipping SGST Tax
+      // BB = Final Shipping IGST Tax
+      // CA = Item Promo Amount (to subtract)
+      // CC = Shipping Promo Amount (to subtract)
+      // CG = Tcs Igst Amount (to subtract)
+      // Based on VBA: =AU2+AV2+AW2+AX2+AY2+AZ2+BA2+BB2-CA2-CC2-CG2
+      if (colFinalAmountReceivable) {
+        const parts = [];
+        // Add all positive components
+        if (colFinalTaxableSalesValue) parts.push(`${colFinalTaxableSalesValue}${row}`); // AU
+        if (colFinalTaxableShippingValue) parts.push(`${colFinalTaxableShippingValue}${row}`); // AV
+        if (colFinalCGSTTax) parts.push(`${colFinalCGSTTax}${row}`); // AW
+        if (colFinalSGSTTax) parts.push(`${colFinalSGSTTax}${row}`); // AX
+        if (colFinalIGSTTax) parts.push(`${colFinalIGSTTax}${row}`); // AY
+        if (colFinalShippingCGSTTax) parts.push(`${colFinalShippingCGSTTax}${row}`); // AZ
+        if (colFinalShippingSGSTTax) parts.push(`${colFinalShippingSGSTTax}${row}`); // BA
+        if (colFinalShippingIGSTTax) parts.push(`${colFinalShippingIGSTTax}${row}`); // BB
+        
+        // Find columns to subtract (CA, CC, CG)
+        const subtractParts = [];
+        try {
+          const colItemPromoAmount = getColLetter('Item Promo Amount'); // CA
+          if (colItemPromoAmount) subtractParts.push(`${colItemPromoAmount}${row}`);
+        } catch (e) {}
+        
+        try {
+          const colShippingPromoAmount = getColLetter('Shipping Promo Amount'); // CC
+          if (colShippingPromoAmount) subtractParts.push(`${colShippingPromoAmount}${row}`);
+        } catch (e) {}
+        
+        // CG = Tcs Igst Amount
+        if (colTcsIgstAmount) subtractParts.push(`${colTcsIgstAmount}${row}`); // CG
+        
+        if (parts.length > 0) {
+          const formula = parts.join('+') + (subtractParts.length > 0 ? '-' + subtractParts.join('-') : '');
+          ws.getCell(`${colFinalAmountReceivable}${row}`).value = { formula };
+        }
+      }
+    } catch (e) {
+      // Continue processing other rows even if one fails
+      // console.warn(`Error processing row ${row}:`, e.message);
+    }
+  }
+}
+
+/**
+ * Build lookup map from Source sheet: states -> invoice number
+ * @param {Worksheet} sourceSheet - ExcelJS worksheet for Source sheet
+ * @returns {Object} - Map of state name to invoice number
+ */
+function buildStateToInvoiceMap(sourceSheet) {
+  const stateInvoiceMap = {};
+  
+  if (!sourceSheet) {
+    // console.warn('Source sheet not provided, cannot build state to invoice map');
+    return stateInvoiceMap;
+  }
+
+  try {
+    // Find "states" column and invoice number column in Source sheet
+    const headerRow = sourceSheet.getRow(1);
+    let statesColIndex = null;
+    let invoiceColIndex = null;
+    
+    // Search for "states" column (case-insensitive)
+    headerRow.eachCell({ includeEmpty: false }, (cell, colNumber) => {
+      const headerName = String(cell.value || '').trim().toLowerCase();
+      if (headerName === 'states' || headerName === 'state') {
+        statesColIndex = colNumber;
+      }
+      // Also look for invoice number column (could be "invoice", "invoice number", "final invoice no", etc.)
+      if (headerName.includes('invoice') && !invoiceColIndex) {
+        invoiceColIndex = colNumber;
+      }
+    });
+
+    // If we found both columns, build the map
+    if (statesColIndex && invoiceColIndex) {
+      const maxRow = Math.min(sourceSheet.rowCount || 100, 100);
+      const statesColLetter = getColumnLetter(statesColIndex);
+      const invoiceColLetter = getColumnLetter(invoiceColIndex);
+      
+      for (let row = 2; row <= maxRow; row++) {
+        const stateCell = sourceSheet.getCell(`${statesColLetter}${row}`);
+        const invoiceCell = sourceSheet.getCell(`${invoiceColLetter}${row}`);
+        
+        if (stateCell.value !== null && stateCell.value !== undefined) {
+          const stateName = String(stateCell.value).trim();
+          const invoiceNumber = invoiceCell.value !== null && invoiceCell.value !== undefined 
+            ? String(invoiceCell.value).trim() 
+            : '';
+          
+          if (stateName) {
+            stateInvoiceMap[stateName] = invoiceNumber;
+          }
+        }
+      }
+    } else {
+      // console.warn(`Could not find states column (found: ${statesColIndex}) or invoice column (found: ${invoiceColIndex}) in Source sheet`);
+    }
+  } catch (error) {
+    // console.warn('Error building state to invoice map:', error.message);
+  }
+
+  return stateInvoiceMap;
+}
+
+/**
+ * STEP 3: Generate Pivot Table (JS Version)
+ * 
+ * CRITICAL FIXES from previous implementation:
+ * 1. Key collision: Simple string join with '|' can collide if values contain '|' or empty strings differ.
+ *    FIX: Use JSON.stringify of object key for stable, collision-free keys.
+ * 
+ * 2. Formula evaluation: Previous code pivoted on formula strings, not calculated values.
+ *    FIX: Assumes process1Data contains fully evaluated numeric values (formulas already calculated).
+ *    Excel PivotTable operates on calculated cell values, not formula text.
+ * 
+ * 3. NaN propagation: parseFloat() returns NaN for non-numeric strings, causing NaN + number = NaN.
+ *    FIX: Use safe numeric conversion: Number(value) || 0, which handles NaN correctly.
+ * 
+ * 4. Filter handling: VBA shows Transaction Type and Final Tax rate as PageFields (filters),
+ *    but they don't affect aggregation unless explicitly applied. Current code correctly doesn't filter.
+ * 
+ * 5. Excel PivotTable behavior: Groups by 4 fields in exact order, sums all data fields.
+ *    Matches VBA: RowFields = [Seller Gstin, Final Invoice No., Ship To State Tally Ledger, FG]
+ *                 DataFields = [Quantity, Final Taxable Sales Value, ...] all with Function = xlSum
+ * 
+ * 6. Final Invoice No. calculation: For each Seller Gstin, find the Ship To State value,
+ *    then look up the invoice number from Source sheet based on that state.
+ */
+function generatePivot(process1Data, sourceSheet = null) {
+  const pivot = {};
+
+  /**
+   * Safe numeric conversion matching Excel behavior:
+   * - null, undefined, empty string → 0
+   * - Non-numeric strings → 0
+   * - NaN from parseFloat → 0
+   * - Valid numbers → number
+   * Excel treats blanks and invalid values as 0 in SUM operations.
+   */
+  const safeNumber = (value) => {
+    if (value === null || value === undefined || value === '') return 0;
+    // Handle string numbers (from formulas evaluated to strings)
+    if (typeof value === 'string') {
+      // Remove commas and whitespace that might be in formatted numbers
+      const cleaned = value.replace(/,/g, '').trim();
+      const num = Number(cleaned);
+      return isNaN(num) ? 0 : num;
+    }
+    // Handle numbers directly
+    const num = Number(value);
+    return isNaN(num) ? 0 : num;
+  };
+
+  /**
+   * Normalize string values for grouping (handle null/undefined as empty string).
+   * Excel PivotTable treats empty cells as empty strings in row grouping.
+   */
+  const normalizeString = (value) => {
+    if (value === null || value === undefined) return '';
+    return String(value).trim();
+  };
+
+  /**
+   * Helper function to normalize column names for case-insensitive matching
+   * Normalizes: converts to lowercase, removes extra spaces, handles variations
+   */
+  const normalizeColumnName = (name) => {
+    if (!name) return '';
+    return String(name).toLowerCase().trim().replace(/\s+/g, ' ');
+  };
+
+  /**
+   * Build a column name map from the first row to handle case/spacing variations
+   * Maps normalized column names to actual column names in the data
+   */
+  const columnNameMap = {};
+  if (process1Data.length > 0) {
+    const sampleRow = process1Data[0];
+    Object.keys(sampleRow).forEach(actualColName => {
+      const normalized = normalizeColumnName(actualColName);
+      if (!columnNameMap[normalized]) {
+        columnNameMap[normalized] = actualColName;
+      }
+    });
+  }
+
+  /**
+   * Get column value from row using case-insensitive matching
+   */
+  const getColumnValue = (row, columnName) => {
+    // Try exact match first
+    if (columnName in row) {
+      return row[columnName];
+    }
+    // Try normalized match
+    const normalized = normalizeColumnName(columnName);
+    const actualColName = columnNameMap[normalized];
+    if (actualColName && actualColName in row) {
+      return row[actualColName];
+    }
+    // Try direct normalized lookup in row keys
+    for (const key in row) {
+      if (normalizeColumnName(key) === normalized) {
+        return row[key];
+      }
+    }
+    return undefined;
+  };
+
+  /**
+   * Create stable, collision-free key from 4 grouping fields.
+   * Using JSON.stringify ensures:
+   * - No collisions from special characters (like '|' in values)
+   * - Consistent ordering
+   * - Proper handling of empty strings vs null vs undefined
+   * 
+   * NOTE: Final Invoice No. (column AB) and Ship To State Tally Ledger (column AA) 
+   * are already calculated columns in Process 1 data, so we use them directly.
+   */
+  const createGroupKey = (row) => {
+    return JSON.stringify({
+      gstin: normalizeString(getColumnValue(row, 'Seller Gstin')),
+      invoice: normalizeString(getColumnValue(row, 'Final Invoice No.')), // Column AB - use directly from Process 1
+      ledger: normalizeString(getColumnValue(row, 'Ship To State Tally Ledger')), // Column AA - use directly from Process 1
+      fg: normalizeString(getColumnValue(row, 'FG'))
+    });
+  };
+
+  // Validate that required columns exist in process1Data
+  if (process1Data.length > 0) {
+    const sampleRow = process1Data[0];
+    const requiredColumns = [
+      'Seller Gstin',
+      'Final Invoice No.',
+      'Ship To State Tally Ledger',
+      'FG',
+      'Quantity',
+      'Final Taxable Sales Value',
+      'Final CGST Tax',
+      'Final SGST Tax',
+      'Final IGST Tax',
+      'Final Taxable Shipping Value',
+      'Final Shipping CGST Tax',
+      'Final Shipping SGST Tax',
+      'Final Shipping IGST Tax',
+      'Tcs Cgst Amount',
+      'Tcs Sgst Amount',
+      'Tcs Igst Amount',
+      'Final Amount Receivable'
+    ];
+    
+    const missingColumns = requiredColumns.filter(col => {
+      const value = getColumnValue(sampleRow, col);
+      return value === undefined;
+    });
+    if (missingColumns.length > 0) {
+      // console.warn('Missing columns in Process 1 data:', missingColumns);
+      // console.log('Available columns:', Object.keys(sampleRow).slice(0, 20));
+    }
+  }
+
+  // Process each row and aggregate by the 4-group key
+  // NOTE: Filters (Transaction Type, Final Tax rate) exist in VBA as PageFields
+  // but do NOT affect aggregation unless explicitly applied. We process ALL rows.
+  process1Data.forEach((row, index) => {
+    // Skip rows with missing essential grouping fields
+    const gstin = normalizeString(getColumnValue(row, 'Seller Gstin'));
+    if (!gstin) {
+      // console.warn(`Skipping row ${index + 1}: Missing Seller Gstin`);
+      return;
+    }
+
+    const groupKey = createGroupKey(row);
+
+    // Initialize pivot row if it doesn't exist
+    // Use values directly from Process 1 data (columns AA and AB are already calculated)
+    if (!pivot[groupKey]) {
+      pivot[groupKey] = {
+        'Seller Gstin': gstin,
+        'Final Invoice No.': normalizeString(getColumnValue(row, 'Final Invoice No.')), // Column AB - from Process 1
+        'Ship To State Tally Ledger': normalizeString(getColumnValue(row, 'Ship To State Tally Ledger')), // Column AA - from Process 1
+        'FG': normalizeString(getColumnValue(row, 'FG')),
+        'Sum of Quantity': 0,
+        'Sum of Final Taxable Sales Value': 0,
+        'Sum of Final CGST Tax': 0,
+        'Sum of Final SGST Tax': 0,
+        'Sum of Final IGST Tax': 0,
+        'Sum of Final Taxable Shipping Value': 0,
+        'Sum of Final Shipping CGST Tax': 0,
+        'Sum of Final Shipping SGST Tax': 0,
+        'Sum of Final Shipping IGST Tax': 0,
+        'Sum of Tcs Cgst Amount': 0,
+        'Sum of Tcs Sgst Amount': 0,
+        'Sum of Tcs Igst Amount': 0,
+        'Sum of Final Amount Receivable': 0
+      };
+    }
+
+    // Sum all data fields using safe numeric conversion
+    // Excel PivotTable sums all rows matching the group key
+    // Each field uses Function = xlSum (SUM aggregation only)
+    // Handle missing columns gracefully by defaulting to 0
+    // Use getColumnValue for case-insensitive column matching
+    pivot[groupKey]['Sum of Quantity'] += safeNumber(getColumnValue(row, 'Quantity'));
+    pivot[groupKey]['Sum of Final Taxable Sales Value'] += safeNumber(getColumnValue(row, 'Final Taxable Sales Value'));
+    pivot[groupKey]['Sum of Final CGST Tax'] += safeNumber(getColumnValue(row, 'Final CGST Tax'));
+    pivot[groupKey]['Sum of Final SGST Tax'] += safeNumber(getColumnValue(row, 'Final SGST Tax'));
+    pivot[groupKey]['Sum of Final IGST Tax'] += safeNumber(getColumnValue(row, 'Final IGST Tax'));
+    pivot[groupKey]['Sum of Final Taxable Shipping Value'] += safeNumber(getColumnValue(row, 'Final Taxable Shipping Value'));
+    pivot[groupKey]['Sum of Final Shipping CGST Tax'] += safeNumber(getColumnValue(row, 'Final Shipping CGST Tax'));
+    pivot[groupKey]['Sum of Final Shipping SGST Tax'] += safeNumber(getColumnValue(row, 'Final Shipping SGST Tax'));
+    pivot[groupKey]['Sum of Final Shipping IGST Tax'] += safeNumber(getColumnValue(row, 'Final Shipping IGST Tax'));
+    pivot[groupKey]['Sum of Tcs Cgst Amount'] += safeNumber(getColumnValue(row, 'Tcs Cgst Amount'));
+    pivot[groupKey]['Sum of Tcs Sgst Amount'] += safeNumber(getColumnValue(row, 'Tcs Sgst Amount'));
+    pivot[groupKey]['Sum of Tcs Igst Amount'] += safeNumber(getColumnValue(row, 'Tcs Igst Amount'));
+    // Note: Sum of Final Amount Receivable is calculated below, not read from process1
+
+    // console.log("safeNumber(row['Tcs Igst Amount'])", safeNumber(getColumnValue(row, 'Tcs Igst Amount')));
+  });
+
+  // Convert pivot object to array of rows
+  // Excel PivotTable in Tabular layout with RepeatAllLabels shows one row per unique group combination
+  const pivotRows = Object.values(pivot);
+
+  // Calculate "Sum of Final Amount Receivable" for each pivot row using the formula:
+  // Sum of Final Taxable Sales Value + Sum of Final CGST Tax + Sum of Final SGST Tax + Sum of Final IGST Tax 
+  // - Sum of Tcs Cgst Amount - Sum of Tcs Sgst Amount - Sum of Tcs Igst Amount
+  pivotRows.forEach(pivotRow => {
+    const sumTaxableSales = safeNumber(pivotRow['Sum of Final Taxable Sales Value']);
+    const sumCGST = safeNumber(pivotRow['Sum of Final CGST Tax']);
+    const sumSGST = safeNumber(pivotRow['Sum of Final SGST Tax']);
+    const sumIGST = safeNumber(pivotRow['Sum of Final IGST Tax']);
+    const sumTcsCGST = safeNumber(pivotRow['Sum of Tcs Cgst Amount']);
+    const sumTcsSGST = safeNumber(pivotRow['Sum of Tcs Sgst Amount']);
+    const sumTcsIGST = safeNumber(pivotRow['Sum of Tcs Igst Amount']);
+    const sumOfFinalTaxableShippingValue = safeNumber(pivotRow['Sum of Final Taxable Shipping Value']);      
+    const sumOfFinalShippingCGSTTax = safeNumber(pivotRow['Sum of Final Shipping CGST Tax']);
+    const sumOfFinalShippingSGSTTax = safeNumber(pivotRow['Sum of Final Shipping SGST Tax']);
+    const sumOfFinalShippingIGSTTax = safeNumber(pivotRow['Sum of Final Shipping IGST Tax']);
+ 
+    pivotRow['Sum of Final Amount Receivable'] = sumTaxableSales + sumCGST + sumSGST + sumIGST + sumOfFinalTaxableShippingValue + sumOfFinalShippingCGSTTax + sumOfFinalShippingSGSTTax + sumOfFinalShippingIGSTTax - sumTcsCGST - sumTcsSGST - sumTcsIGST;
+  });
+
+  // Ensure all pivot rows have the correct column order and all required columns
+  // Column order as per user requirement:
+  // Seller Gstin, Final Invoice No., Ship To State Tally Ledger, FG, then all Sum columns
+  const orderedColumns = [
+    'Seller Gstin',
+    'Final Invoice No.',
+    'Ship To State Tally Ledger',
+    'FG',
+    'Sum of Quantity',
+    'Sum of Final Taxable Sales Value',
+    'Sum of Final CGST Tax',
+    'Sum of Final SGST Tax',
+    'Sum of Final IGST Tax',
+    'Sum of Final Taxable Shipping Value',
+    'Sum of Final Shipping CGST Tax',
+    'Sum of Final Shipping SGST Tax',
+    'Sum of Final Shipping IGST Tax',
+    'Sum of Tcs Cgst Amount',
+    'Sum of Tcs Sgst Amount',
+    'Sum of Tcs Igst Amount',
+    'Sum of Final Amount Receivable'
+  ];
+
+  // Reorder columns in each pivot row to match the required order
+  const orderedPivotRows = pivotRows.map(row => {
+    const orderedRow = {};
+    orderedColumns.forEach(col => {
+      orderedRow[col] = row[col] !== undefined ? row[col] : (col.startsWith('Sum of') ? 0 : '');
+    });
+    return orderedRow;
+  });
+
+  // Sort to match Excel PivotTable default sorting (by row fields in order)
+  // This ensures consistent output matching VBA behavior
+  orderedPivotRows.sort((a, b) => {
+    // Sort by: Seller Gstin, then Final Invoice No., then Ship To State Tally Ledger, then FG
+    if (a['Seller Gstin'] !== b['Seller Gstin']) {
+      return a['Seller Gstin'].localeCompare(b['Seller Gstin']);
+    }
+    if (a['Final Invoice No.'] !== b['Final Invoice No.']) {
+      return a['Final Invoice No.'].localeCompare(b['Final Invoice No.']);
+    }
+    if (a['Ship To State Tally Ledger'] !== b['Ship To State Tally Ledger']) {
+      return a['Ship To State Tally Ledger'].localeCompare(b['Ship To State Tally Ledger']);
+    }
+    return a['FG'].localeCompare(b['FG']);
+  });
+
+  // console.log(`Generated ${orderedPivotRows.length} pivot rows from ${process1Data.length} Process 1 rows`);
+  if (orderedPivotRows.length > 0) {
+    // console.log('Pivot table columns:', Object.keys(orderedPivotRows[0]));
+  }
+
+  return orderedPivotRows;
+}
+
+/**
+ * Create pivot sheet with formulas for calculated columns
+ * @param {Array} pivotData - Array of pivot row objects
+ * @returns {Object} XLSX worksheet object with formulas
+ */
+function createPivotSheetWithFormulas(pivotData) {
+  if (!pivotData || pivotData.length === 0) {
+    return XLSX.utils.json_to_sheet([]);
+  }
+
+  // Define column order (matching orderedColumns from generatePivot)
+  const orderedColumns = [
+    'Seller Gstin',
+    'Final Invoice No.',
+    'Ship To State Tally Ledger',
+    'FG',
+    'Sum of Quantity',
+    'Sum of Final Taxable Sales Value',
+    'Sum of Final CGST Tax',
+    'Sum of Final SGST Tax',
+    'Sum of Final IGST Tax',
+    'Sum of Final Taxable Shipping Value',
+    'Sum of Final Shipping CGST Tax',
+    'Sum of Final Shipping SGST Tax',
+    'Sum of Final Shipping IGST Tax',
+    'Sum of Tcs Cgst Amount',
+    'Sum of Tcs Sgst Amount',
+    'Sum of Tcs Igst Amount',
+    'Sum of Final Amount Receivable'
+  ];
+
+  // Helper function to convert column index to Excel column letter (0 -> A, 26 -> AA, etc.)
+  const getColumnLetter = (colIndex) => {
+    let result = '';
+    let num = colIndex;
+    while (num >= 0) {
+      result = String.fromCharCode(65 + (num % 26)) + result;
+      num = Math.floor(num / 26) - 1;
+    }
+    return result;
+  };
+
+  // Create worksheet data array (without formulas first)
+  const wsData = [];
+  
+  // Add header row
+  wsData.push(orderedColumns);
+  
+  // Add data rows (values only for now)
+  pivotData.forEach((row) => {
+    const dataRow = [];
+    orderedColumns.forEach((colName) => {
+      const value = row[colName] !== undefined ? row[colName] : (colName.startsWith('Sum of') ? 0 : '');
+      dataRow.push(value);
+    });
+    wsData.push(dataRow);
+  });
+  
+  // Convert to XLSX worksheet
+  const ws = XLSX.utils.aoa_to_sheet(wsData);
+  
+  // Now add formulas to "Sum of Final Amount Receivable" column
+  const finalAmountReceivableColIndex = orderedColumns.indexOf('Sum of Final Amount Receivable');
+  if (finalAmountReceivableColIndex >= 0) {
+    const finalAmountReceivableColLetter = getColumnLetter(finalAmountReceivableColIndex);
+    
+    // Helper to get column letter for a column name
+    const getColRef = (name) => {
+      const idx = orderedColumns.indexOf(name);
+      return idx >= 0 ? getColumnLetter(idx) : '';
+    };
+    
+    // Get column letters for referenced columns
+    const sumTaxableSalesCol = getColRef('Sum of Final Taxable Sales Value');
+    const sumCGSTCol = getColRef('Sum of Final CGST Tax');
+    const sumSGSTCol = getColRef('Sum of Final SGST Tax');
+    const sumIGSTCol = getColRef('Sum of Final IGST Tax');
+    const sumShippingValueCol = getColRef('Sum of Final Taxable Shipping Value');
+    const sumShippingCGSTCol = getColRef('Sum of Final Shipping CGST Tax');
+    const sumShippingSGSTCol = getColRef('Sum of Final Shipping SGST Tax');
+    const sumShippingIGSTCol = getColRef('Sum of Final Shipping IGST Tax');
+    const sumTcsCGSTCol = getColRef('Sum of Tcs Cgst Amount');
+    const sumTcsSGSTCol = getColRef('Sum of Tcs Sgst Amount');
+    const sumTcsIGSTCol = getColRef('Sum of Tcs Igst Amount');
+    
+    // Add formulas to each data row (starting from row 2, since row 1 is header)
+    pivotData.forEach((row, rowIndex) => {
+      const excelRowNum = rowIndex + 2; // Excel row number (1-based, +1 for header)
+      const cellAddress = `${finalAmountReceivableColLetter}${excelRowNum}`;
+      
+      // Build formula: Sum of Final Taxable Sales Value + Sum of Final CGST Tax + Sum of Final SGST Tax + Sum of Final IGST Tax 
+      //                + Sum of Final Taxable Shipping Value + Sum of Final Shipping CGST Tax + Sum of Final Shipping SGST Tax + Sum of Final Shipping IGST Tax
+      //                - Sum of Tcs Cgst Amount - Sum of Tcs Sgst Amount - Sum of Tcs Igst Amount
+      const formulaParts = [];
+      if (sumTaxableSalesCol) formulaParts.push(`${sumTaxableSalesCol}${excelRowNum}`);
+      if (sumCGSTCol) formulaParts.push(`${sumCGSTCol}${excelRowNum}`);
+      if (sumSGSTCol) formulaParts.push(`${sumSGSTCol}${excelRowNum}`);
+      if (sumIGSTCol) formulaParts.push(`${sumIGSTCol}${excelRowNum}`);
+      if (sumShippingValueCol) formulaParts.push(`${sumShippingValueCol}${excelRowNum}`);
+      if (sumShippingCGSTCol) formulaParts.push(`${sumShippingCGSTCol}${excelRowNum}`);
+      if (sumShippingSGSTCol) formulaParts.push(`${sumShippingSGSTCol}${excelRowNum}`);
+      if (sumShippingIGSTCol) formulaParts.push(`${sumShippingIGSTCol}${excelRowNum}`);
+      if (sumTcsCGSTCol) formulaParts.push(`-${sumTcsCGSTCol}${excelRowNum}`);
+      if (sumTcsSGSTCol) formulaParts.push(`-${sumTcsSGSTCol}${excelRowNum}`);
+      if (sumTcsIGSTCol) formulaParts.push(`-${sumTcsIGSTCol}${excelRowNum}`);
+      
+      const formula = formulaParts.join('+');
+      
+      // Set formula in cell
+      // XLSX format: cell object with f property for formula
+      if (!ws[cellAddress]) {
+        ws[cellAddress] = {};
+      }
+      ws[cellAddress].f = formula;
+      // Also set the value (calculated value) for display
+      ws[cellAddress].v = row['Sum of Final Amount Receivable'] !== undefined ? row['Sum of Final Amount Receivable'] : 0;
+      ws[cellAddress].t = 'n'; // numeric type
+    });
+  }
+  
+  return ws;
+}
+
+/**
+ * Main processing function
+ */
+async function processMacros(rawFileBuffer, skuFileBuffer, brandName, date) {
+  try {
+    // Validate file buffers
+    if (!rawFileBuffer || rawFileBuffer.length === 0) {
+      throw new Error('Raw file buffer is empty or invalid');
+    }
+
+    if (!skuFileBuffer || skuFileBuffer.length === 0) {
+      throw new Error('SKU file buffer is empty or invalid');
+    }
+
+    // Always use XLSX library first to read files (it handles both .xls and .xlsx)
+    // ExcelJS only supports .xlsx, so we need to convert .xls files first
+    let workbook, skuWorkbook;
+
+    // Read raw file with XLSX (handles both .xls and .xlsx)
+    let rawWorkbookXLSX;
+    try {
+      rawWorkbookXLSX = XLSX.read(rawFileBuffer, { 
+        type: 'buffer', 
+        cellDates: true,
+        cellNF: false,
+        cellText: false
+      });
+    } catch (xlsxError) {
+      throw new Error(`Failed to read raw file: ${xlsxError.message}. Please ensure the file is a valid Excel file (.xls or .xlsx).`);
+    }
+
+    if (!rawWorkbookXLSX.SheetNames || rawWorkbookXLSX.SheetNames.length === 0) {
+      throw new Error('Raw file has no worksheets');
+    }
+
+    // Read SKU file with XLSX (handles both .xls and .xlsx)
+    let skuWorkbookXLSX;
+    try {
+      skuWorkbookXLSX = XLSX.read(skuFileBuffer, { 
+        type: 'buffer', 
+        cellDates: true,
+        cellNF: false,
+        cellText: false
+      });
+    } catch (xlsxError) {
+      throw new Error(`Failed to read SKU file: ${xlsxError.message}. Please ensure the file is a valid Excel file (.xls or .xlsx).`);
+    }
+
+    if (!skuWorkbookXLSX.SheetNames || skuWorkbookXLSX.SheetNames.length === 0) {
+      throw new Error('SKU file has no worksheets');
+    }
+
+    // Convert XLSX workbooks to .xlsx buffers for ExcelJS
+    let rawFileXLSXBuffer, skuFileXLSXBuffer;
+    try {
+      rawFileXLSXBuffer = XLSX.write(rawWorkbookXLSX, { 
+        type: 'buffer', 
+        bookType: 'xlsx',
+        compression: true
+      });
+    } catch (writeError) {
+      throw new Error(`Failed to convert raw file to .xlsx format: ${writeError.message}`);
+    }
+
+    try {
+      skuFileXLSXBuffer = XLSX.write(skuWorkbookXLSX, { 
+        type: 'buffer', 
+        bookType: 'xlsx',
+        compression: true
+      });
+    } catch (writeError) {
+      throw new Error(`Failed to convert SKU file to .xlsx format: ${writeError.message}`);
+    }
+
+    // Validate converted buffers
+    if (!rawFileXLSXBuffer || rawFileXLSXBuffer.length === 0) {
+      throw new Error('Failed to convert raw file to valid .xlsx buffer');
+    }
+
+    if (!skuFileXLSXBuffer || skuFileXLSXBuffer.length === 0) {
+      throw new Error('Failed to convert SKU file to valid .xlsx buffer');
+    }
+
+    // Now load into ExcelJS (which only supports .xlsx)
+    try {
+      workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(rawFileXLSXBuffer);
+    } catch (excelJSError) {
+      throw new Error(`Failed to load raw file into ExcelJS: ${excelJSError.message}. The file was successfully read and converted, but ExcelJS cannot process it.`);
+    }
+
+    try {
+      skuWorkbook = new ExcelJS.Workbook();
+      await skuWorkbook.xlsx.load(skuFileXLSXBuffer);
+    } catch (excelJSError) {
+      throw new Error(`Failed to load SKU file into ExcelJS: ${excelJSError.message}. The file was successfully read and converted, but ExcelJS cannot process it.`);
+    }
+
+    // Get or create "Proccess 1" worksheet
+    let ws = workbook.getWorksheet('Proccess 1');
+    if (!ws) {
+      ws = workbook.getWorksheet('Process 1') || workbook.getWorksheet('Process1');
+      if (!ws) {
+        ws = workbook.worksheets[0];
+        if (ws) {
+          ws.name = 'Proccess 1';
+        }
+      }
+    }
+
+    if (!ws) {
+      throw new Error('No worksheet found in raw file');
+    }
+
+    // ============================================================
+    // STEP 0: CAPTURE ALL ORIGINAL COLUMNS BEFORE ANY PROCESSING
+    // ============================================================
+    // CRITICAL: Read all column headers from the original file BEFORE any filtering or processing
+    // This ensures we preserve ALL columns even if they get lost during processing
+    const originalColumnMap = {}; // Store original column positions and names
+    const originalHeaderRow = ws.getRow(1);
+    const originalMaxCol = ws.columnCount || originalHeaderRow.cellCount || 200;
+    
+    for (let colNum = 1; colNum <= originalMaxCol; colNum++) {
+      const cell = originalHeaderRow.getCell(colNum);
+      const cellValue = cell.value;
+      if (cellValue !== null && cellValue !== undefined) {
+        const headerName = String(cellValue).trim();
+        if (headerName) {
+          originalColumnMap[colNum] = headerName;
+        }
+      }
+    }
+    
+    // Also use eachCell to catch any we might have missed
+    originalHeaderRow.eachCell({ includeEmpty: false }, (cell, colNumber) => {
+      const headerName = String(cell.value || '').trim();
+      if (headerName && !originalColumnMap[colNumber]) {
+        originalColumnMap[colNumber] = headerName;
+      }
+    });
+
+    // ============================================================
+    // STEP 0: FILTER ROWS BY TRANSACTION TYPE (MUST BE FIRST!)
+    // ============================================================
+    // Only keep rows where Transaction Type = "Shipment" or "Refund"
+    // All other rows are deleted before any processing begins
+    // This ensures all subsequent operations only work on filtered data
+    // console.log('\n========== MACROS PROCESSING FLOW ==========');
+    // console.log('Step 0: Filter rows by Transaction Type');
+    const filteredRowCount = filterRowsByTransactionType(ws); // Returns number of kept data rows
+    
+    let sourceSheet = skuWorkbook.getWorksheet('Source');
+    if (!sourceSheet) {
+      sourceSheet = skuWorkbook.worksheets[0];
+      if (sourceSheet) {
+        sourceSheet.name = 'Source';
+      }
+    }
+
+    if (!sourceSheet) {
+      throw new Error('No Source sheet found in SKU file');
+    }
+
+    // Add Source sheet to main workbook if not present
+    let mainSourceSheet = workbook.getWorksheet('Source');
+    if (!mainSourceSheet) {
+      mainSourceSheet = workbook.addWorksheet('Source');
+      // Copy data from SKU file Source sheet
+      sourceSheet.eachRow((row, rowNumber) => {
+        const newRow = mainSourceSheet.getRow(rowNumber);
+        row.eachCell((cell, colNumber) => {
+          newRow.getCell(colNumber).value = cell.value;
+        });
+      });
+    }
+
+    // ============================================================
+    // STEP 1: INSERT REQUIRED COLUMNS - REMOVED
+    // ============================================================
+    // Column insertion removed - keeping original file structure
+    // Calculated columns (FG, Ship To State Tally Ledger, Final Invoice No., etc.)
+    // will be calculated in memory and added to JSON/database without inserting into Excel
+    // insertColumnsAndRenameHeaders(workbook, 'Proccess 1');
+
+    // ============================================================
+    // STEP 2: APPLY FORMULAS - SKIPPED (no inserted columns to apply formulas to)
+    // ============================================================
+    // Formulas for inserted columns are skipped since columns are not inserted
+    // Values will be calculated in memory during JSON conversion
+    // applyFormulas(ws, 'Source');
+
+    // ============================================================
+    // STEP 3: EVALUATE FORMULAS & CONVERT TO JSON
+    // ============================================================
+    // console.log('Step 3: Evaluate formulas and convert to JSON');
+    // CRITICAL: Excel PivotTable operates on calculated values, not formula strings.
+    // We must evaluate all formulas before converting to JSON for database storage.
+    
+    // Build column name map from header row
+    // Read ALL columns to ensure we capture all headers, even if some cells appear empty
+    const headerRow = ws.getRow(1);
+    const columnMap = {}; // colNumber -> headerName
+    
+    // Get the actual column count from the worksheet
+    const maxColCount = ws.columnCount || headerRow.cellCount || 200;
+    
+    // Iterate through all possible columns to ensure we capture all headers
+    for (let colNumber = 1; colNumber <= maxColCount; colNumber++) {
+      const cell = headerRow.getCell(colNumber);
+      const cellValue = cell.value;
+      if (cellValue !== null && cellValue !== undefined) {
+        const headerName = String(cellValue).trim();
+        if (headerName) {
+          columnMap[colNumber] = headerName;
+        }
+      }
+    }
+    
+    // Also check using eachCell as a fallback to catch any columns we might have missed
+    headerRow.eachCell({ includeEmpty: false }, (cell, colNumber) => {
+      const headerName = String(cell.value || '').trim();
+      if (headerName && !columnMap[colNumber]) {
+        columnMap[colNumber] = headerName;
+      }
+    });
+
+    // Initialize formula evaluator with worksheet and source sheet
+    const evaluator = new FormulaEvaluator(ws, mainSourceSheet);
+
+    // Read all data rows and evaluate formulas
+    const process1Json = [];
+    const lastRow = Math.min(ws.rowCount || 50000, 50000);
+    const missingSKUsSet = new Set();
+    
+    // Find SKU column number
+    let skuColNumber = null;
+    for (const [colNum, headerName] of Object.entries(columnMap)) {
+      if (headerName === 'Sku' || headerName === 'SKU') {
+        skuColNumber = parseInt(colNum);
+        break;
+      }
+    }
+    
+    for (let rowNum = 2; rowNum <= lastRow; rowNum++) {
+      const row = ws.getRow(rowNum);
+      const rowData = {};
+      let hasData = false;
+      let rowHasError = false;
+      let skuValue = null;
+
+      // Get SKU value first if column exists
+      if (skuColNumber) {
+        const skuCell = row.getCell(skuColNumber);
+        if (skuCell && skuCell.value) {
+          skuValue = String(skuCell.value).trim();
+        }
+      }
+
+      // CRITICAL: Read from ALL columns in originalColumnMap FIRST to ensure we capture all original data
+      // Then also read from columnMap to get any new/modified columns
+      // This ensures we don't miss columns like Tcs Cgst Rate, Tcs Cgst Amount, etc.
+      
+      // Helper function to normalize column names for comparison
+      const normalizeColName = (name) => {
+        return String(name).toLowerCase().trim().replace(/\s+/g, ' ');
+      };
+      
+      // Create a map of normalized column names to track what we've processed
+      const processedColumns = new Set();
+      const processedColumnNames = new Map(); // normalized name -> original name
+      
+      // Step 1: Read from originalColumnMap (original file columns at original positions)
+      // Critical columns that must be preserved
+      const criticalColumns = [
+        'Tcs Cgst Rate', 'Tcs Cgst Amount', 'Tcs Sgst Rate', 'Tcs Sgst Amount',
+        'Tcs Utgst Rate', 'Tcs Utgst Amount', 'Tcs Igst Rate', 'Tcs Igst Amount',
+        'Warehouse Id', 'Fulfillment Channel', 'Payment Method Code',
+        'Credit Note No', 'Credit Note Date'
+      ];
+      
+      for (const [colNumberStr, headerName] of Object.entries(originalColumnMap)) {
+        const colNumber = parseInt(colNumberStr);
+        const normalizedName = normalizeColName(headerName);
+        
+        // Skip if we've already processed this column name (avoid duplicates)
+        if (processedColumns.has(normalizedName)) {
+          continue;
+        }
+        processedColumns.add(normalizedName);
+        processedColumnNames.set(normalizedName, headerName);
+        
+        const cell = row.getCell(colNumber);
+        
+        let cellValue;
+        
+        // Enhanced cell value reading - try multiple methods
+        if (cell.formula) {
+          // If cell has a formula, evaluate it
+          const colLetter = evaluator.getColumnLetterFromIndex(colNumber - 1);
+          cellValue = evaluator.getCellValue(colLetter, rowNum);
+        } else {
+          // Try multiple methods to read cell value
+          // 1. Try cell.value first (most common)
+          cellValue = cell.value;
+          
+          // 2. If value is null/undefined/empty, try cell.text (formatted value)
+          if ((cellValue === null || cellValue === undefined || cellValue === '') && cell.text) {
+            cellValue = cell.text.trim();
+            // Try to convert to number if it looks like a number
+            if (cellValue && !isNaN(cellValue) && cellValue !== '') {
+              const numValue = parseFloat(cellValue);
+              if (!isNaN(numValue)) {
+                cellValue = numValue;
+              }
+            }
+          }
+          
+          // 3. If still empty, try cell.formattedValue
+          if ((cellValue === null || cellValue === undefined || cellValue === '') && cell.formattedValue) {
+            cellValue = cell.formattedValue;
+          }
+          
+          // 4. Handle date cells
+          if (cellValue instanceof Date) {
+            // Keep date as-is, or convert to string if needed
+            cellValue = cellValue;
+          }
+        }
+        
+        // Check if this is FG column and has empty value (missing SKU)
+        if (headerName === 'FG' && (cellValue === '' || cellValue === null || cellValue === undefined)) {
+          // Track the missing SKU
+          if (skuValue) {
+            missingSKUsSet.add(skuValue);
+          }
+          rowHasError = true;
+          // Don't add this cell value - will skip row
+          continue;
+        }
+        
+        // For critical columns, preserve the value even if it's 0 or empty string
+        // Don't convert to empty string for critical columns - preserve actual values
+        const isCriticalColumn = criticalColumns.some(col => normalizeColName(col) === normalizedName);
+        
+        if (cellValue === null || cellValue === undefined) {
+          // Only convert to empty string if not a critical column
+          if (!isCriticalColumn) {
+            cellValue = '';
+          } else {
+            // For critical columns, try to preserve 0 or empty string as-is
+            cellValue = cellValue === null ? null : (cellValue === undefined ? undefined : '');
+          }
+        }
+        
+        // Use the original header name to preserve exact column names
+        rowData[headerName] = cellValue;
+        hasData = true;
+      }
+      
+      // Step 2: Read from columnMap (any new/modified columns after processing)
+      for (const [colNumberStr, headerName] of Object.entries(columnMap)) {
+        const colNumber = parseInt(colNumberStr);
+        const normalizedName = normalizeColName(headerName);
+        
+        // Skip if we've already processed this column name from originalColumnMap
+        if (processedColumns.has(normalizedName)) {
+          continue;
+        }
+        processedColumns.add(normalizedName);
+        processedColumnNames.set(normalizedName, headerName);
+        
+        const cell = row.getCell(colNumber);
+        
+        let cellValue;
+        
+        // Enhanced cell value reading - same as Step 1
+        if (cell.formula) {
+          // If cell has a formula, evaluate it
+          const colLetter = evaluator.getColumnLetterFromIndex(colNumber - 1);
+          cellValue = evaluator.getCellValue(colLetter, rowNum);
+        } else {
+          // Try multiple methods to read cell value
+          cellValue = cell.value;
+          
+          // If value is null/undefined/empty, try cell.text (formatted value)
+          if ((cellValue === null || cellValue === undefined || cellValue === '') && cell.text) {
+            cellValue = cell.text.trim();
+            // Try to convert to number if it looks like a number
+            if (cellValue && !isNaN(cellValue) && cellValue !== '') {
+              const numValue = parseFloat(cellValue);
+              if (!isNaN(numValue)) {
+                cellValue = numValue;
+              }
+            }
+          }
+          
+          // If still empty, try cell.formattedValue
+          if ((cellValue === null || cellValue === undefined || cellValue === '') && cell.formattedValue) {
+            cellValue = cell.formattedValue;
+          }
+          
+          // Handle date cells
+          if (cellValue instanceof Date) {
+            cellValue = cellValue;
+          }
+        }
+        
+        // Check if this is FG column and has empty value (missing SKU)
+        if (headerName === 'FG' && (cellValue === '' || cellValue === null || cellValue === undefined)) {
+          // Track the missing SKU
+          if (skuValue) {
+            missingSKUsSet.add(skuValue);
+          }
+          rowHasError = true;
+          // Don't add this cell value - will skip row
+          continue;
+        }
+        
+        // Check if this is a critical column
+        const isCriticalColumn = criticalColumns.some(col => normalizeColName(col) === normalizedName);
+        
+        // Preserve the actual value
+        if (cellValue === null || cellValue === undefined) {
+          if (!isCriticalColumn) {
+            cellValue = '';
+          } else {
+            cellValue = cellValue === null ? null : (cellValue === undefined ? undefined : '');
+          }
+        }
+        
+        // Use the original header name
+        rowData[headerName] = cellValue;
+        hasData = true;
+      }
+
+      // Step 3: Explicit fallback - read critical columns directly from worksheet if missing
+      // This ensures we don't miss any columns even if they're not in the maps
+      const criticalColumnsToFind = [
+        'Tcs Cgst Rate', 'Tcs Cgst Amount', 'Tcs Sgst Rate', 'Tcs Sgst Amount',
+        'Tcs Utgst Rate', 'Tcs Utgst Amount', 'Tcs Igst Rate', 'Tcs Igst Amount',
+        'Warehouse Id', 'Fulfillment Channel', 'Payment Method Code',
+        'Credit Note No', 'Credit Note Date'
+      ];
+      
+      for (const criticalColName of criticalColumnsToFind) {
+        const normalizedCritical = normalizeColName(criticalColName);
+        
+        // Check if we already have this column
+        if (processedColumns.has(normalizedCritical)) {
+          continue;
+        }
+        
+        // Try to find this column in the header row by searching all columns
+        let foundColNum = null;
+        const headerRowForSearch = ws.getRow(1);
+        const maxSearchCol = ws.columnCount || headerRowForSearch.cellCount || 200;
+        
+        for (let searchCol = 1; searchCol <= maxSearchCol; searchCol++) {
+          const searchCell = headerRowForSearch.getCell(searchCol);
+          const searchValue = searchCell.value;
+          if (searchValue !== null && searchValue !== undefined) {
+            const searchHeaderName = String(searchValue).trim();
+            if (normalizeColName(searchHeaderName) === normalizedCritical) {
+              foundColNum = searchCol;
+              break;
+            }
+          }
+        }
+        
+        // If found, read the value
+        if (foundColNum !== null) {
+          const fallbackCell = row.getCell(foundColNum);
+          let fallbackValue = fallbackCell.value;
+          
+          // Try multiple methods to read value
+          if ((fallbackValue === null || fallbackValue === undefined || fallbackValue === '') && fallbackCell.text) {
+            fallbackValue = fallbackCell.text.trim();
+            if (fallbackValue && !isNaN(fallbackValue) && fallbackValue !== '') {
+              const numValue = parseFloat(fallbackValue);
+              if (!isNaN(numValue)) {
+                fallbackValue = numValue;
+              }
+            }
+          }
+          
+          if (fallbackValue !== null && fallbackValue !== undefined) {
+            rowData[criticalColName] = fallbackValue;
+            processedColumns.add(normalizedCritical);
+            hasData = true;
+          }
+        }
+      }
+
+      // Only add row if it has some data and no missing SKU errors
+      if (hasData && !rowHasError) {
+        process1Json.push(rowData);
+      }
+    }
+
+    // Check if we have missing SKUs
+    if (missingSKUsSet.size > 0 || evaluator.missingSKUs.size > 0) {
+      const allMissingSKUs = Array.from(new Set([...missingSKUsSet, ...evaluator.missingSKUs]));
+      const error = new Error(`Some SKUs are missing from the database: ${allMissingSKUs.join(', ')}`);
+      error.missingSKUs = allMissingSKUs;
+      throw error;
+    }
+
+    // ============================================================
+    // CALCULATE COMPUTED COLUMNS IN MEMORY
+    // ============================================================
+    // Since column insertion was removed, we need to calculate these columns in memory
+    // and add them to process1Json for pivot generation and database storage
+    
+    // Build FG lookup map from Source sheet
+    const fgLookupMap = new Map();
+    if (mainSourceSheet) {
+      const maxSourceRow = Math.min(mainSourceSheet.rowCount || 1000, 1000);
+      for (let sourceRow = 1; sourceRow <= maxSourceRow; sourceRow++) {
+        const skuCell = mainSourceSheet.getCell(`A${sourceRow}`);
+        const fgCell = mainSourceSheet.getCell(`B${sourceRow}`);
+        if (skuCell && skuCell.value && fgCell && fgCell.value) {
+          const sku = String(skuCell.value).trim();
+          const fg = String(fgCell.value).trim();
+          if (sku && fg) {
+            fgLookupMap.set(sku, fg);
+          }
+        }
+      }
+    }
+
+    process1Json.forEach((row) => {
+      // Helper function to safely get numeric value
+      const getNum = (colName) => {
+        const val = row[colName];
+        if (val === null || val === undefined || val === '') return 0;
+        const num = parseFloat(val);
+        return isNaN(num) ? 0 : num;
+      };
+
+      // Helper function to safely get string value
+      const getStr = (colName) => {
+        const val = row[colName];
+        return val ? String(val).trim() : '';
+      };
+
+      // Calculate FG (if not already present)
+      // = VLOOKUP(Sku, Source!$A:$C, 2, FALSE)
+      if (!row['FG'] || row['FG'] === '') {
+        const sku = getStr('Sku');
+        if (sku && fgLookupMap.has(sku)) {
+          row['FG'] = fgLookupMap.get(sku);
+        } else if (sku) {
+          // SKU not found - this should have been caught earlier, but set empty
+          row['FG'] = '';
+        }
+      }
+
+      // Calculate Final Taxable Shipping Value
+      // = Shipping Amount Basis + Gift Wrap Amount Basis + Gift Wrap Promo Amount Basis + Shipping Promo Discount Basis
+      const shippingAmountBasis = getNum('Shipping Amount Basis');
+      const giftWrapAmountBasis = getNum('Gift Wrap Amount Basis');
+      const giftWrapPromoAmountBasis = getNum('Gift Wrap Promo Amount Basis');
+      const shippingPromoDiscountBasis = getNum('Shipping Promo Discount Basis');
+      const finalTaxableShippingValue = shippingAmountBasis + giftWrapAmountBasis + giftWrapPromoAmountBasis + shippingPromoDiscountBasis;
+      row['Final Taxable Shipping Value'] = finalTaxableShippingValue;
+
+      // Calculate Final Taxable Sales Value
+      // = Tax Exclusive Gross - Final Taxable Shipping Value
+      const taxExclusiveGross = getNum('Tax Exclusive Gross');
+      let finalTaxableSalesValue = taxExclusiveGross - finalTaxableShippingValue;
+      
+      // If Transaction Type is "Refund", make Final Taxable Sales Value negative
+      const transactionType = getStr('Transaction Type');
+      if (transactionType && transactionType.toLowerCase().trim() === 'refund') {
+        finalTaxableSalesValue = -Math.abs(finalTaxableSalesValue);
+      }
+      
+      row['Final Taxable Sales Value'] = finalTaxableSalesValue;
+
+      // Calculate Final Tax rate
+      // = Cgst Rate + Sgst Rate (or Igst Rate if applicable)
+      const cgstRate = getNum('Cgst Rate');
+      
+      const igstRate = getNum('Igst Rate');
+      const finalTaxRate = cgstRate + igstRate;
+      row['Final Tax rate'] = finalTaxRate;
+
+      // Get state values for tax calculations
+      const shipFromState = getStr('Ship From State');
+      const shipToState = getStr('Ship To State');
+      const isSameState = shipFromState && shipToState && shipFromState.toLowerCase().trim() === shipToState.toLowerCase().trim();
+
+      // Calculate Final CGST Tax
+      // = IF(Ship From State = Ship To State, Final Taxable Sales Value * Final Tax rate, 0)
+      const finalCGSTTax = isSameState ? finalTaxableSalesValue * finalTaxRate : 0;
+      row['Final CGST Tax'] = finalCGSTTax;
+
+      // Calculate Final SGST Tax (same as CGST)
+      const finalSGSTTax = isSameState ? finalTaxableSalesValue * finalTaxRate : 0;
+      row['Final SGST Tax'] = finalSGSTTax;
+
+      // Calculate Final IGST Tax
+      // = IF(Ship From State <> Ship To State, Final Taxable Sales Value * Final Tax rate, 0)
+      const finalIGSTTax = !isSameState ? finalTaxableSalesValue * finalTaxRate : 0;
+      row['Final IGST Tax'] = finalIGSTTax;
+
+      // Calculate Final Shipping CGST Tax
+      // = IF(Ship From State = Ship To State, Final Taxable Shipping Value * Final Tax rate, 0)
+      const finalShippingCGSTTax = isSameState ? finalTaxableShippingValue * finalTaxRate : 0;
+      row['Final Shipping CGST Tax'] = finalShippingCGSTTax;
+
+      // Calculate Final Shipping SGST Tax (same as CGST)
+      const finalShippingSGSTTax = isSameState ? finalTaxableShippingValue * finalTaxRate : 0;
+      row['Final Shipping SGST Tax'] = finalShippingSGSTTax;
+
+      // Calculate Final Shipping IGST Tax
+      // = IF(Ship From State <> Ship To State, Final Taxable Shipping Value * Final Tax rate, 0)
+      const finalShippingIGSTTax = !isSameState ? finalTaxableShippingValue * finalTaxRate : 0;
+      row['Final Shipping IGST Tax'] = finalShippingIGSTTax;
+
+      // Calculate Final Amount Receivable
+      // = Final Taxable Sales Value + Final Taxable Shipping Value + Final CGST Tax + Final SGST Tax + Final IGST Tax
+      //   + Final Shipping CGST Tax + Final Shipping SGST Tax + Final Shipping IGST Tax
+      //   - Item Promo Discount - Shipping Promo Discount - Tcs Cgst Amount - Tcs Sgst Amount - Tcs Igst Amount
+      const itemPromoDiscount = getNum('Item Promo Discount');
+      const shippingPromoDiscount = getNum('Shipping Promo Discount');
+      const tcsCgstAmount = getNum('Tcs Cgst Amount');
+      const tcsSgstAmount = getNum('Tcs Sgst Amount');
+      const tcsIgstAmount = getNum('Tcs Igst Amount');
+      
+      const finalAmountReceivable = finalTaxableSalesValue + finalTaxableShippingValue +
+        finalCGSTTax + finalSGSTTax + finalIGSTTax +
+        finalShippingCGSTTax + finalShippingSGSTTax + finalShippingIGSTTax -
+        itemPromoDiscount - shippingPromoDiscount -
+        tcsCgstAmount - tcsSgstAmount - tcsIgstAmount;
+      row['Final Amount Receivable'] = finalAmountReceivable;
+    });
+
+
+    // CRITICAL: Ensure ALL columns from ORIGINAL file are explicitly preserved in the worksheet
+    // Intelligent merge: Keep original columns at their original positions, only add NEW columns
+    // Step 1: Create a set of column names from originalColumnMap
+    const originalColumnNames = new Set(Object.values(originalColumnMap));
+    
+    // Step 2: Start with originalColumnMap as the base to preserve ALL original positions
+    // This ensures columns 67-78 stay at their original positions
+    const allColumnsMap = { ...originalColumnMap };
+    
+    // Step 3: Only add NEW columns from columnMap (columns that don't exist in originalColumnMap)
+    // These are the inserted columns like FG, Ship To State Tally Ledger, Final Invoice No., etc.
+    // Keep them at their positions from columnMap
+    for (const [colNumberStr, headerName] of Object.entries(columnMap)) {
+      const colNumber = parseInt(colNumberStr);
+      
+      // Only add if this is a NEW column (not in originalColumnMap)
+      if (!originalColumnNames.has(headerName)) {
+        // This is a new inserted column - add it at the position from columnMap
+        // But first check if that position is already taken by an original column
+        if (allColumnsMap[colNumber] && allColumnsMap[colNumber] !== headerName) {
+          // Position is taken by an original column - find next available position
+          let nextPos = colNumber;
+          while (allColumnsMap[nextPos]) {
+            nextPos++;
+          }
+          allColumnsMap[nextPos] = headerName;
+        } else {
+          // Position is free or same column - add it
+          allColumnsMap[colNumber] = headerName;
+        }
+      }
+      // If column exists in originalColumnMap, we keep it at its original position (don't move it)
+    }
+
+    // ============================================================
+    // ADD CALCULATED COLUMNS TO allColumnsMap AT SPECIFIC POSITIONS
+    // ============================================================
+    // Helper function to shift columns after a given position
+    const shiftColumnsAfter = (startPos, shiftBy) => {
+      const sortedCols = Object.keys(allColumnsMap).map(k => parseInt(k)).sort((a, b) => b - a); // Sort descending
+      for (const colNum of sortedCols) {
+        if (colNum >= startPos) {
+          const headerName = allColumnsMap[colNum];
+          delete allColumnsMap[colNum];
+          allColumnsMap[colNum + shiftBy] = headerName;
+        }
+      }
+    };
+
+    // Helper function to check if column already exists
+    const findColumnPosition = (colName) => {
+      for (const [colNum, headerName] of Object.entries(allColumnsMap)) {
+        if (headerName === colName) {
+          return parseInt(colNum);
+        }
+      }
+      return null;
+    };
+
+    const calculatedColumnMap = {}; // Map column name to column number
+
+    // Step 1: Insert FG after column 14 (at position 15)
+    const fgPosition = findColumnPosition('FG');
+    if (fgPosition === null) {
+      // Shift all columns from position 15 onwards by 1
+      shiftColumnsAfter(15, 1);
+      // Insert FG at position 15
+      allColumnsMap[15] = 'FG';
+      calculatedColumnMap['FG'] = 15;
+    } else {
+      calculatedColumnMap['FG'] = fgPosition;
+    }
+
+    // Step 2: Insert other calculated columns after column 45
+    // After inserting FG at position 15, all columns from 15+ have shifted by 1
+    // So the column that was originally at position 45 is now at position 46
+    // We want to insert after position 45 (which means at position 46, after accounting for FG)
+    const otherCalculatedColumns = [
+      'Final Taxable Shipping Value',
+      'Final Taxable Sales Value',
+      'Final Tax rate',
+      'Final CGST Tax',
+      'Final SGST Tax',
+      'Final IGST Tax',
+      'Final Shipping CGST Tax',
+      'Final Shipping SGST Tax',
+      'Final Shipping IGST Tax',
+      'Final Amount Receivable'
+    ];
+
+    // Find the insertion point: after column 45
+    // Since FG was inserted at 15, columns 15-45 have shifted, but we still want to insert after position 45
+    // So we insert at position 46 (45 + 1)
+    let insertAtPos = 46;
+    
+    // But first, check if any of these columns already exist
+    // If they do, we'll use their existing positions
+    const columnsToInsert = [];
+    for (const colName of otherCalculatedColumns) {
+      const existingPos = findColumnPosition(colName);
+      if (existingPos === null) {
+        columnsToInsert.push(colName);
+      } else {
+        calculatedColumnMap[colName] = existingPos;
+      }
+    }
+    
+    // If we have columns to insert, shift existing columns and insert them
+    if (columnsToInsert.length > 0) {
+      // Shift all columns from insertAtPos onwards to make room
+      shiftColumnsAfter(insertAtPos, columnsToInsert.length);
+      
+      // Insert the calculated columns starting at insertAtPos
+      let currentPos = insertAtPos;
+      for (const colName of columnsToInsert) {
+        allColumnsMap[currentPos] = colName;
+        calculatedColumnMap[colName] = currentPos;
+        currentPos++;
+      }
+    }
+
+    // ExcelJS will optimize away columns with no data, so we must explicitly set cells for ALL columns
+    // in ALL rows to ensure they are written to the file
+    const allColNumbers = Object.keys(allColumnsMap).map(k => parseInt(k)).sort((a, b) => a - b);
+    const maxColNumber = allColNumbers.length > 0 ? Math.max(...allColNumbers) : 0;
+    // Use process1Json.length to ensure we write calculated columns for all data rows
+    const lastDataRow = Math.min(ws.rowCount || 2, process1Json.length + 1);
+    
+    // CRITICAL: First, ensure header row has ALL columns explicitly set
+    // This must happen before setting data cells
+    const finalHeaderRow = ws.getRow(1);
+    for (const colNumber of allColNumbers) {
+      const headerName = allColumnsMap[colNumber];
+      if (headerName) {
+        const headerCell = finalHeaderRow.getCell(colNumber);
+        // Explicitly set header value - this creates the cell if it doesn't exist
+        headerCell.value = headerName;
+      }
+    }
+    
+    // Helper function to convert column number to Excel column letter (1 -> A, 27 -> AA, etc.)
+    const getColumnLetter = (colNum) => {
+      let result = '';
+      while (colNum > 0) {
+        colNum--;
+        result = String.fromCharCode(65 + (colNum % 26)) + result;
+        colNum = Math.floor(colNum / 26);
+      }
+      return result;
+    };
+
+    // Helper function to find column letter for a given column name
+    const getColumnLetterByName = (colName) => {
+      for (const [colNum, headerName] of Object.entries(allColumnsMap)) {
+        if (headerName === colName) {
+          return getColumnLetter(parseInt(colNum));
+        }
+      }
+      return null;
+    };
+
+    // Helper function to generate formula for a calculated column
+    const getFormulaForColumn = (headerName, rowNum) => {
+      const row = rowNum.toString();
+      
+      // Get column letters for referenced columns
+      const getCol = (name) => {
+        const letter = getColumnLetterByName(name);
+        return letter ? `${letter}${row}` : '';
+      };
+
+      switch (headerName) {
+        case 'FG':
+          // FG: VLOOKUP from Source sheet using SKU
+          const skuCol = getCol('Sku');
+          if (skuCol) {
+            // Use 'Source' as the sheet name (the SKU lookup sheet)
+            return `VLOOKUP(${skuCol},Source!$A:$C,2,FALSE)`;
+          }
+          break;
+
+        case 'Final Taxable Shipping Value':
+          // = Shipping Amount Basis + Gift Wrap Amount Basis + Gift Wrap Promo Amount Basis + Shipping Promo Discount Basis
+          const parts1 = [getCol('Shipping Amount Basis'), getCol('Gift Wrap Amount Basis'), 
+                          getCol('Gift Wrap Promo Amount Basis'), getCol('Shipping Promo Discount Basis')].filter(Boolean);
+          if (parts1.length > 0) {
+            return parts1.join('+');
+          }
+          break;
+
+        case 'Final Taxable Sales Value':
+          // = Tax Exclusive Gross - Final Taxable Shipping Value, then make negative if Refund
+          const taxExclusiveCol = getCol('Tax Exclusive Gross');
+          const shippingValueCol = getCol('Final Taxable Shipping Value');
+          const transTypeCol = getCol('Transaction Type');
+          
+          if (taxExclusiveCol && shippingValueCol) {
+            const baseFormula = `${taxExclusiveCol}-${shippingValueCol}`;
+            if (transTypeCol) {
+              return `IF(UPPER(${transTypeCol})="REFUND",-ABS(${baseFormula}),${baseFormula})`;
+            }
+            return baseFormula;
+          }
+          break;
+
+        case 'Final Tax rate':
+          // = Cgst Rate + Sgst Rate + Igst Rate
+          const parts2 = [getCol('Cgst Rate'), getCol('Sgst Rate'), getCol('Igst Rate')].filter(Boolean);
+          if (parts2.length > 0) {
+            return parts2.join('+');
+          }
+          break;
+
+        case 'Final CGST Tax':
+          // = IF(Ship From State = Ship To State, Final Taxable Sales Value * Final Tax rate, 0)
+          const shipFromCol = getCol('Ship From State');
+          const shipToCol = getCol('Ship To State');
+          const taxableSalesCol = getCol('Final Taxable Sales Value');
+          const taxRateCol = getCol('Final Tax rate');
+          if (shipFromCol && shipToCol && taxableSalesCol && taxRateCol) {
+            return `IF(${shipFromCol}=${shipToCol},${taxableSalesCol}*${taxRateCol},0)`;
+          }
+          break;
+
+        case 'Final SGST Tax':
+          // Same as Final CGST Tax
+          const shipFromCol2 = getCol('Ship From State');
+          const shipToCol2 = getCol('Ship To State');
+          const taxableSalesCol2 = getCol('Final Taxable Sales Value');
+          const taxRateCol2 = getCol('Final Tax rate');
+          if (shipFromCol2 && shipToCol2 && taxableSalesCol2 && taxRateCol2) {
+            return `IF(${shipFromCol2}=${shipToCol2},${taxableSalesCol2}*${taxRateCol2},0)`;
+          }
+          break;
+
+        case 'Final IGST Tax':
+          // = IF(Ship From State <> Ship To State, Final Taxable Sales Value * Final Tax rate, 0)
+          const shipFromCol3 = getCol('Ship From State');
+          const shipToCol3 = getCol('Ship To State');
+          const taxableSalesCol3 = getCol('Final Taxable Sales Value');
+          const taxRateCol3 = getCol('Final Tax rate');
+          if (shipFromCol3 && shipToCol3 && taxableSalesCol3 && taxRateCol3) {
+            return `IF(${shipFromCol3}<>${shipToCol3},${taxableSalesCol3}*${taxRateCol3},0)`;
+          }
+          break;
+
+        case 'Final Shipping CGST Tax':
+          // = IF(Ship From State = Ship To State, Final Taxable Shipping Value * Final Tax rate, 0)
+          const shipFromCol4 = getCol('Ship From State');
+          const shipToCol4 = getCol('Ship To State');
+          const shippingValueCol2 = getCol('Final Taxable Shipping Value');
+          const taxRateCol4 = getCol('Final Tax rate');
+          if (shipFromCol4 && shipToCol4 && shippingValueCol2 && taxRateCol4) {
+            return `IF(${shipFromCol4}=${shipToCol4},${shippingValueCol2}*${taxRateCol4},0)`;
+          }
+          break;
+
+        case 'Final Shipping SGST Tax':
+          // Same as Final Shipping CGST Tax
+          const shipFromCol5 = getCol('Ship From State');
+          const shipToCol5 = getCol('Ship To State');
+          const shippingValueCol3 = getCol('Final Taxable Shipping Value');
+          const taxRateCol5 = getCol('Final Tax rate');
+          if (shipFromCol5 && shipToCol5 && shippingValueCol3 && taxRateCol5) {
+            return `IF(${shipFromCol5}=${shipToCol5},${shippingValueCol3}*${taxRateCol5},0)`;
+          }
+          break;
+
+        case 'Final Shipping IGST Tax':
+          // = IF(Ship From State <> Ship To State, Final Taxable Shipping Value * Final Tax rate, 0)
+          const shipFromCol6 = getCol('Ship From State');
+          const shipToCol6 = getCol('Ship To State');
+          const shippingValueCol4 = getCol('Final Taxable Shipping Value');
+          const taxRateCol6 = getCol('Final Tax rate');
+          if (shipFromCol6 && shipToCol6 && shippingValueCol4 && taxRateCol6) {
+            return `IF(${shipFromCol6}<>${shipToCol6},${shippingValueCol4}*${taxRateCol6},0)`;
+          }
+          break;
+
+        case 'Final Amount Receivable':
+          // = Final Taxable Sales Value + Final Taxable Shipping Value + Final CGST Tax + Final SGST Tax + Final IGST Tax
+          //   + Final Shipping CGST Tax + Final Shipping SGST Tax + Final Shipping IGST Tax
+          //   - Item Promo Discount - Shipping Promo Discount - Tcs Cgst Amount - Tcs Sgst Amount - Tcs Igst Amount
+          const parts3 = [
+            getCol('Final Taxable Sales Value'),
+            getCol('Final Taxable Shipping Value'),
+            getCol('Final CGST Tax'),
+            getCol('Final SGST Tax'),
+            getCol('Final IGST Tax'),
+            getCol('Final Shipping CGST Tax'),
+            getCol('Final Shipping SGST Tax'),
+            getCol('Final Shipping IGST Tax')
+          ].filter(Boolean);
+          const parts4 = [
+            getCol('Item Promo Discount'),
+            getCol('Shipping Promo Discount'),
+            getCol('Tcs Cgst Amount'),
+            getCol('Tcs Sgst Amount'),
+            getCol('Tcs Igst Amount')
+          ].filter(Boolean);
+          
+          if (parts3.length > 0) {
+            const positivePart = parts3.join('+');
+            const negativePart = parts4.length > 0 ? '-' + parts4.join('-') : '';
+            return positivePart + negativePart;
+          }
+          break;
+      }
+      return null;
+    };
+
+    // CRITICAL: For each column in allColumnsMap, explicitly ensure cells exist in ALL data rows
+    // ExcelJS will not write columns that have no cells set, so we must set them explicitly
+    for (const colNumber of allColNumbers) {
+      const headerName = allColumnsMap[colNumber];
+      if (!headerName) continue;
+      
+      // Check if this is a calculated column
+      const isCalculatedColumn = calculatedColumnMap.hasOwnProperty(headerName);
+      
+      // For ALL data rows, explicitly set the cell value (even if empty)
+      // This is critical - ExcelJS will not write columns that have no cells set
+      for (let rowNum = 2; rowNum <= lastDataRow; rowNum++) {
+        const row = ws.getRow(rowNum);
+        const cell = row.getCell(colNumber);
+        
+        // If this is a calculated column, set formula
+        if (isCalculatedColumn) {
+          // Generate formula for this column
+          const formula = getFormulaForColumn(headerName, rowNum);
+          
+          if (formula) {
+            // Use correct ExcelJS syntax: cell.value = { formula: '...' }
+            // ExcelJS will automatically calculate the formula value when the file is opened
+            cell.value = { formula: formula };
+          } else {
+            // If no formula available, set value from process1Json
+            const jsonRowIndex = rowNum - 2; // Convert Excel row to JSON index
+            if (jsonRowIndex >= 0 && jsonRowIndex < process1Json.length) {
+              const jsonRow = process1Json[jsonRowIndex];
+              const value = jsonRow[headerName];
+              if (value !== null && value !== undefined && value !== '') {
+                cell.value = value;
+              } else {
+                cell.value = '';
+              }
+            } else {
+              cell.value = '';
+            }
+          }
+        } else {
+          // For non-calculated columns, preserve existing value from process1Json
+          // CRITICAL: Read from process1Json to preserve original values
+          const jsonRowIndex = rowNum - 2; // Convert Excel row to JSON index
+          if (jsonRowIndex >= 0 && jsonRowIndex < process1Json.length) {
+            const jsonRow = process1Json[jsonRowIndex];
+            const value = jsonRow[headerName];
+            
+            // If value exists in process1Json, use it (preserves original values)
+            if (value !== null && value !== undefined) {
+              cell.value = value;
+            } else if (cell.value === null || cell.value === undefined) {
+              // Only set empty if both are empty
+              cell.value = '';
+            }
+            // If cell has a value but jsonRow doesn't, keep the cell value (don't overwrite)
+          } else {
+            // If no JSON row, preserve existing cell value or set empty
+            if (cell.value === null || cell.value === undefined || cell.value === '') {
+              cell.value = ''; // Explicitly set empty string to preserve column
+            }
+          }
+        }
+      }
+    }
+    
+    // Force ExcelJS to recognize the full column range by accessing the last column
+    // This helps ensure all columns are included in the written file
+    if (maxColNumber > 0) {
+      // Access the last column in header and last data row to force ExcelJS to include it
+      const lastHeaderCell = finalHeaderRow.getCell(maxColNumber);
+      if (lastDataRow >= 2) {
+        const lastDataCell = ws.getRow(lastDataRow).getCell(maxColNumber);
+        // Ensure these cells exist
+        if (!lastHeaderCell.value && allColumnsMap[maxColNumber]) {
+          lastHeaderCell.value = allColumnsMap[maxColNumber];
+        }
+        if (lastDataCell.value === null || lastDataCell.value === undefined) {
+          lastDataCell.value = '';
+        }
+      }
+    }
+
+    // console.log(`Converted ${process1Json.length} rows to JSON`);
+
+    // ============================================================
+    // STEP 4: GENERATE PIVOT TABLE
+    // ============================================================
+    // console.log('Step 4: Generate Pivot Table');
+    // process1Json contains cell values from ExcelJS worksheet
+    // Formulas may not be calculated yet, but safeNumber() in pivot will handle formula strings as 0
+    // For proper operation, formulas should be evaluated first (by Excel or formula engine)
+    // The pivot function safely handles any remaining strings, nulls, or invalid values
+    // Pass source sheet to pivot function for Final Invoice No. lookup
+    const pivotData = generatePivot(process1Json, mainSourceSheet);
+    // console.log(`Generated ${pivotData.length} pivot rows`);
+
+    // ============================================================
+    // STEP 5: CREATE PIVOT 1 & REPORT1 SHEETS
+    // ============================================================
+    // console.log('Step 5: Create Pivot 1 & Report1 sheets');
+    const outputWorkbook = XLSX.utils.book_new();
+    
+    // Create pivot sheet with formulas for calculated columns
+    const pivotSheet = createPivotSheetWithFormulas(pivotData);
+    XLSX.utils.book_append_sheet(outputWorkbook, pivotSheet, 'Pivot 1');
+    
+    // Report1 is same as Pivot but values only (no formulas)
+    const report1Sheet = XLSX.utils.json_to_sheet(pivotData);
+    XLSX.utils.book_append_sheet(outputWorkbook, report1Sheet, 'Report1');
+
+    // console.log('========== MACROS PROCESSING COMPLETE ==========\n');
+
+    return {
+      process1Json,
+      pivotData,
+      workbook, // ExcelJS workbook with formulas
+      outputWorkbook, // XLSX workbook with pivot and report
+      originalColumnMap, // Original column map for validation
+      filteredRowCount // Number of data rows after filtering (for validation)
+    };
+  } catch (error) {
+    // Preserve missingSKUs if it exists in the error
+    if (error.missingSKUs) {
+      const newError = new Error(`Failed to process macros: ${error.message}`);
+      newError.missingSKUs = error.missingSKUs;
+      throw newError;
+    }
+    throw new Error(`Failed to process macros: ${error.message}`);
+  }
+}
+
+/**
+ * Validate Process1 file generation
+ * Checks if row count and column names match between original and generated files
+ * @param {Object} originalColumnMap - Map of original column positions to names
+ * @param {number} originalRowCount - Number of data rows in original file (after filtering)
+ * @param {Object} generatedWorkbook - ExcelJS workbook of generated Process1 file
+ * @param {Array} process1Json - JSON representation of Process1 data
+ * @returns {Object} Validation result with isValid, errors, warnings, and details
+ */
+function validateProcess1File(originalColumnMap, originalRowCount, generatedWorkbook, process1Json) {
+  const errors = [];
+  const warnings = [];
+  let isValid = true;
+
+  // Get Process1 worksheet from generated workbook
+  let process1Sheet = generatedWorkbook.getWorksheet('Proccess 1');
+  if (!process1Sheet) {
+    process1Sheet = generatedWorkbook.getWorksheet('Process 1') || generatedWorkbook.getWorksheet('Process1');
+  }
+  if (!process1Sheet) {
+    process1Sheet = generatedWorkbook.worksheets[0];
+  }
+
+  if (!process1Sheet) {
+    return {
+      isValid: false,
+      rowCountMatch: false,
+      columnsMatch: false,
+      originalRowCount: originalRowCount,
+      generatedRowCount: 0,
+      process1JsonRowCount: process1Json ? process1Json.length : 0,
+      missingColumns: [],
+      errors: ['Process1 worksheet not found in generated workbook'],
+      warnings: []
+    };
+  }
+
+  // Step 1: Validate row count
+  // Count data rows in generated file (excluding header row)
+  const generatedRowCount = process1Json ? process1Json.length : (process1Sheet.rowCount > 1 ? process1Sheet.rowCount - 1 : 0);
+  const rowCountMatch = generatedRowCount === originalRowCount;
+
+  if (!rowCountMatch) {
+    isValid = false;
+    errors.push(`Row count mismatch: Original has ${originalRowCount} data rows, Generated has ${generatedRowCount} data rows`);
+  }
+
+  // Step 2: Validate column names
+  // Extract column names from generated file header row
+  const generatedHeaderRow = process1Sheet.getRow(1);
+  const generatedColumnNames = new Set();
+  const generatedColumnMap = {};
+
+  // Read all columns from generated header
+  const maxColCount = process1Sheet.columnCount || generatedHeaderRow.cellCount || 200;
+  for (let colNum = 1; colNum <= maxColCount; colNum++) {
+    const cell = generatedHeaderRow.getCell(colNum);
+    const cellValue = cell.value;
+    if (cellValue !== null && cellValue !== undefined) {
+      const headerName = String(cellValue).trim();
+      if (headerName) {
+        generatedColumnNames.add(headerName);
+        generatedColumnMap[colNum] = headerName;
+      }
+    }
+  }
+
+  // Also use eachCell to catch any we might have missed
+  generatedHeaderRow.eachCell({ includeEmpty: false }, (cell, colNumber) => {
+    const headerName = String(cell.value || '').trim();
+    if (headerName) {
+      generatedColumnNames.add(headerName);
+      if (!generatedColumnMap[colNumber]) {
+        generatedColumnMap[colNumber] = headerName;
+      }
+    }
+  });
+
+  // Normalize column names for comparison (case-insensitive, trim spaces)
+  const normalizeColumnName = (name) => {
+    return String(name).toLowerCase().trim().replace(/\s+/g, ' ');
+  };
+
+  // Check if all original columns exist in generated file
+  const missingColumns = [];
+  const originalColumnNamesSet = new Set();
+  
+  for (const [pos, name] of Object.entries(originalColumnMap)) {
+    const normalizedOriginal = normalizeColumnName(name);
+    originalColumnNamesSet.add(normalizedOriginal);
+    
+    // Check if this column exists in generated file (case-insensitive)
+    let found = false;
+    for (const generatedName of generatedColumnNames) {
+      const normalizedGenerated = normalizeColumnName(generatedName);
+      if (normalizedOriginal === normalizedGenerated) {
+        found = true;
+        break;
+      }
+    }
+    
+    if (!found) {
+      missingColumns.push(name);
+    }
+  }
+
+  const columnsMatch = missingColumns.length === 0;
+
+  if (!columnsMatch) {
+    isValid = false;
+    errors.push(`Missing columns in generated file: ${missingColumns.join(', ')}`);
+  }
+
+  // Check for extra columns in generated file (warnings only, not errors)
+  const extraColumns = [];
+  for (const generatedName of generatedColumnNames) {
+    const normalizedGenerated = normalizeColumnName(generatedName);
+    let found = false;
+    for (const originalName of Object.values(originalColumnMap)) {
+      const normalizedOriginal = normalizeColumnName(originalName);
+      if (normalizedOriginal === normalizedGenerated) {
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      extraColumns.push(generatedName);
+    }
+  }
+
+  if (extraColumns.length > 0) {
+    warnings.push(`Extra columns in generated file (not in original): ${extraColumns.join(', ')}`);
+  }
+
+  return {
+    isValid,
+    rowCountMatch,
+    columnsMatch,
+    originalRowCount,
+    generatedRowCount,
+    process1JsonRowCount: process1Json ? process1Json.length : 0,
+    missingColumns,
+    extraColumns,
+    errors,
+    warnings,
+    originalColumnCount: Object.keys(originalColumnMap).length,
+    generatedColumnCount: generatedColumnNames.size
+  };
+}
+
+/**
+ * Validate Pivot vs Process1 sum consistency
+ * Checks if the sum of "Sum of Final Taxable Sales Value" in pivot equals
+ * the sum of "Final Taxable Sales Value" in Process1
+ * @param {Array} process1Json - JSON representation of Process1 data
+ * @param {Array} pivotData - JSON representation of Pivot data
+ * @returns {Object} Validation result with isValid, errors, warnings, and details
+ */
+function validatePivotProcess1Sum(process1Json, pivotData) {
+  const errors = [];
+  const warnings = [];
+  let isValid = true;
+
+  // Helper function to safely get numeric value
+  const safeNumber = (val) => {
+    if (val === null || val === undefined || val === '') return 0;
+    const num = parseFloat(val);
+    return isNaN(num) ? 0 : num;
+  };
+
+  // Helper function for case-insensitive column value retrieval
+  const getColumnValue = (row, columnName) => {
+    // Direct match first
+    if (columnName in row) {
+      return row[columnName];
+    }
+    // Case-insensitive match
+    const normalized = columnName.toLowerCase().trim().replace(/\s+/g, ' ');
+    for (const key in row) {
+      const keyNormalized = key.toLowerCase().trim().replace(/\s+/g, ' ');
+      if (keyNormalized === normalized) {
+        return row[key];
+      }
+    }
+    return undefined;
+  };
+
+  // Step 1: Sum "Final Taxable Sales Value" from Process1
+  let process1Sum = 0;
+  let process1RowCount = 0;
+  if (process1Json && Array.isArray(process1Json)) {
+    process1Json.forEach((row) => {
+      const value = getColumnValue(row, 'Final Taxable Sales Value');
+      if (value !== undefined) {
+        process1Sum += safeNumber(value);
+        process1RowCount++;
+      }
+    });
+  }
+
+  // Step 2: Sum "Sum of Final Taxable Sales Value" from Pivot
+  let pivotSum = 0;
+  let pivotRowCount = 0;
+  if (pivotData && Array.isArray(pivotData)) {
+    pivotData.forEach((row) => {
+      const value = getColumnValue(row, 'Sum of Final Taxable Sales Value');
+      if (value !== undefined) {
+        pivotSum += safeNumber(value);
+        pivotRowCount++;
+      }
+    });
+  }
+
+  // Step 3: Compare sums (with tolerance for floating point errors)
+  const tolerance = 0.01; // Allow 0.01 difference for floating point precision
+  const difference = Math.abs(process1Sum - pivotSum);
+  const sumMatch = difference <= tolerance;
+
+  if (!sumMatch) {
+    isValid = false;
+    errors.push(
+      `Sum mismatch: Process1 "Final Taxable Sales Value" sum = ${process1Sum.toFixed(2)}, ` +
+      `Pivot "Sum of Final Taxable Sales Value" sum = ${pivotSum.toFixed(2)}, ` +
+      `Difference = ${difference.toFixed(2)}`
+    );
+  }
+
+  // Additional checks
+  if (process1RowCount === 0) {
+    warnings.push('No "Final Taxable Sales Value" values found in Process1 data');
+  }
+  if (pivotRowCount === 0) {
+    warnings.push('No "Sum of Final Taxable Sales Value" values found in Pivot data');
+  }
+
+  return {
+    isValid,
+    sumMatch,
+    process1Sum: process1Sum,
+    pivotSum: pivotSum,
+    difference: difference,
+    process1RowCount,
+    pivotRowCount,
+    errors,
+    warnings
+  };
+}
+
+module.exports = {
+  processMacros,
+  generatePivot,
+  validateProcess1File,
+  validatePivotProcess1Sum
+};

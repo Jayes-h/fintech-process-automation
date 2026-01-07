@@ -163,17 +163,24 @@ export const misDataApi = {
 };
 
 export const macrosApi = {
-  generateMacros: async (rawFile, brandId, sellerPortalId, date) => {
+  generateMacros: async (rawFile, brandId, sellerPortalId, date, fileType = null) => {
     const formData = new FormData();
     formData.append('rawFile', rawFile);
     formData.append('brandId', brandId);
     formData.append('sellerPortalId', sellerPortalId);
     formData.append('date', date);
+    if (fileType) {
+      formData.append('fileType', fileType);
+    }
     
-    // Debug: Log what we're sending (skuId should NOT be included)
-    console.log('Generating macros with:', { brandId, sellerPortalId, date, hasRawFile: !!rawFile });
+    // Determine endpoint based on fileType (B2B vs B2C)
+    // B2B uses /macros-b2b/generate with different processing logic
+    const endpoint = fileType === 'B2B' ? '/macros-b2b/generate' : '/macros/generate';
     
-    const response = await api.post('/macros/generate', formData, {
+    // Debug: Log what we're sending
+    console.log('Generating macros with:', { brandId, sellerPortalId, date, fileType, endpoint, hasRawFile: !!rawFile });
+    
+    const response = await api.post(endpoint, formData, {
       headers: {
         'Content-Type': 'multipart/form-data'
       }
@@ -186,8 +193,16 @@ export const macrosApi = {
     return response.data;
   },
 
-  getFilesByBrand: async (brandName) => {
-    const response = await api.get(`/macros/brand/${brandName}`);
+  getFilesByBrand: async (brandName, brandId = null) => {
+    const url = brandId 
+      ? `/macros/brand/${brandName}?brandId=${brandId}`
+      : `/macros/brand/${brandName}`;
+    const response = await api.get(url);
+    return response.data;
+  },
+
+  getFilesByBrandAndPortal: async (brandId, sellerPortalId) => {
+    const response = await api.get(`/macros/files/${brandId}/${sellerPortalId}`);
     return response.data;
   },
 
@@ -213,6 +228,18 @@ export const macrosApi = {
       responseType: 'blob'
     });
     return response.data;
+  },
+
+  downloadCombined: async (fileId) => {
+    const response = await api.get(`/macros/download/combined/${fileId}`, {
+      responseType: 'blob'
+    });
+    return response.data;
+  },
+
+  deleteMacrosFile: async (fileId) => {
+    const response = await api.delete(`/macros/files/${fileId}`);
+    return response.data;
   }
 };
 
@@ -234,6 +261,50 @@ export const brandsApi = {
 
   updateBrand: async (id, name) => {
     const response = await api.put(`/brands/${id}`, { name });
+    return response.data;
+  },
+
+  updateBrandInfo: async (brandId, data) => {
+    const response = await api.put(`/brands/${brandId}`, data);
+    return response.data;
+  },
+
+  uploadBrandImage: async (brandId, formData) => {
+    const response = await api.post(`/brands/${brandId}/upload-image`, formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data'
+      }
+    });
+    return response.data;
+  },
+
+  assignAgentToBrand: async (brandId, agentId) => {
+    const response = await api.post(`/brands/${brandId}/agents`, { agentId });
+    return response.data;
+  },
+
+  removeAgentFromBrand: async (brandId, agentId) => {
+    const response = await api.delete(`/brands/${brandId}/agents/${agentId}`);
+    return response.data;
+  },
+
+  getBrandAgents: async (brandId) => {
+    const response = await api.get(`/brands/${brandId}/agents`);
+    return response.data;
+  },
+
+  getBrandPortals: async (brandId) => {
+    const response = await api.get(`/brands/${brandId}/portals`);
+    return response.data;
+  },
+
+  assignPortalToBrand: async (brandId, portalId) => {
+    const response = await api.post(`/brands/${brandId}/portals`, { portalId });
+    return response.data;
+  },
+
+  removePortalFromBrand: async (brandId, portalId) => {
+    const response = await api.delete(`/brands/${brandId}/portals/${portalId}`);
     return response.data;
   },
 
@@ -335,6 +406,49 @@ export const skuApi = {
         'Content-Type': 'multipart/form-data'
       }
     });
+    return response.data;
+  }
+};
+
+export const stateConfigApi = {
+  getStateConfig: async (brandId, sellerPortalId) => {
+    const response = await api.get(`/state-config/${brandId}/${sellerPortalId}`);
+    return response.data;
+  },
+
+  getStateConfigsByBrand: async (brandId) => {
+    const response = await api.get(`/state-config/brand/${brandId}`);
+    return response.data;
+  },
+
+  createOrUpdateStateConfig: async (brandId, sellerPortalId, configData) => {
+    const response = await api.post('/state-config', {
+      brandId,
+      sellerPortalId,
+      configData
+    });
+    return response.data;
+  },
+
+  uploadStateConfigFile: async (brandId, sellerPortalId, file) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    
+    const response = await api.post(`/state-config/upload/${brandId}/${sellerPortalId}`, formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data'
+      }
+    });
+    return response.data;
+  },
+
+  updateStateConfig: async (id, configData) => {
+    const response = await api.put(`/state-config/${id}`, { configData });
+    return response.data;
+  },
+
+  deleteStateConfig: async (id) => {
+    const response = await api.delete(`/state-config/${id}`);
     return response.data;
   }
 };

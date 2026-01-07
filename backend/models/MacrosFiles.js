@@ -52,6 +52,11 @@ const MacrosFiles = sequelize.define('MacrosFiles', {
   pivot_record_count: {
     type: DataTypes.INTEGER,
     defaultValue: 0
+  },
+  fileType: {
+    type: DataTypes.STRING,
+    allowNull: true,
+    defaultValue: null
   }
 }, {
   tableName: 'macros_files',

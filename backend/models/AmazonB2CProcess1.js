@@ -3,7 +3,7 @@ const sequelize = require('../config/sequelize');
 const Brands = require('./Brands');
 const SellerPortals = require('./SellerPortals');
 
-const Process1 = sequelize.define('Process1', {
+const AmazonB2CProcess1 = sequelize.define('AmazonB2CProcess1', {
   id: {
     type: DataTypes.UUID,
     defaultValue: DataTypes.UUIDV4,
@@ -119,8 +119,7 @@ const Process1 = sequelize.define('Process1', {
   fulfillment_channel: DataTypes.STRING,
   payment_method_code: DataTypes.STRING,
   credit_note_no: DataTypes.STRING,
-  credit_note: DataTypes.STRING,
-  sellar_portal: DataTypes.STRING
+  credit_note: DataTypes.STRING
 }, {
   tableName: 'process_1',
   timestamps: true,
@@ -128,11 +127,8 @@ const Process1 = sequelize.define('Process1', {
 });
 
 // Define associations
-Process1.belongsTo(Brands, { foreignKey: 'brandId', as: 'brand' });
-Process1.belongsTo(SellerPortals, { foreignKey: 'sellerPortalId', as: 'sellerPortal' });
+AmazonB2CProcess1.belongsTo(Brands, { foreignKey: 'brandId', as: 'brand' });
+AmazonB2CProcess1.belongsTo(SellerPortals, { foreignKey: 'sellerPortalId', as: 'sellerPortal' });
 
-module.exports = Process1;
-
-
-
+module.exports = AmazonB2CProcess1;
 

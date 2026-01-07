@@ -3,7 +3,7 @@ const sequelize = require('../config/sequelize');
 const Brands = require('./Brands');
 const SellerPortals = require('./SellerPortals');
 
-const Pivot = sequelize.define('Pivot', {
+const AmazonB2CPivot = sequelize.define('AmazonB2CPivot', {
   id: {
     type: DataTypes.UUID,
     defaultValue: DataTypes.UUIDV4,
@@ -92,11 +92,8 @@ const Pivot = sequelize.define('Pivot', {
 });
 
 // Define associations
-Pivot.belongsTo(Brands, { foreignKey: 'brandId', as: 'brand' });
-Pivot.belongsTo(SellerPortals, { foreignKey: 'sellerPortalId', as: 'sellerPortal' });
+AmazonB2CPivot.belongsTo(Brands, { foreignKey: 'brandId', as: 'brand' });
+AmazonB2CPivot.belongsTo(SellerPortals, { foreignKey: 'sellerPortalId', as: 'sellerPortal' });
 
-module.exports = Pivot;
-
-
-
+module.exports = AmazonB2CPivot;
 

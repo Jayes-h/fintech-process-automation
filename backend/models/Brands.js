@@ -11,6 +11,24 @@ const Brands = sequelize.define('Brands', {
     type: DataTypes.STRING,
     allowNull: false,
     unique: true
+  },
+  imageUrl: {
+    type: DataTypes.STRING,
+    allowNull: true
+  },
+  description: {
+    type: DataTypes.TEXT,
+    allowNull: true
+  },
+  contactInfo: {
+    type: DataTypes.JSONB,
+    allowNull: true,
+    defaultValue: {}
+  },
+  settings: {
+    type: DataTypes.JSONB,
+    allowNull: true,
+    defaultValue: {}
   }
 }, {
   tableName: 'brands',
@@ -19,5 +37,3 @@ const Brands = sequelize.define('Brands', {
 });
 
 module.exports = Brands;
-
-

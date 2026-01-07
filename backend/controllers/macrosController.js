@@ -1,9 +1,10 @@
-const Process1 = require('../models/Process1');
-const Pivot = require('../models/Pivot');
+const AmazonB2CProcess1 = require('../models/AmazonB2CProcess1');
+const AmazonB2CPivot = require('../models/AmazonB2CPivot');
 const MacrosFiles = require('../models/MacrosFiles');
 const Brands = require('../models/Brands');
 const SellerPortals = require('../models/SellerPortals');
 const SKU = require('../models/SKU');
+const StateConfig = require('../models/StateConfig');
 const { processMacros } = require('../modules/Macros/macrosProcessor');
 const XLSX = require('xlsx-js-style');
 const ExcelJS = require('exceljs');
@@ -238,27 +239,31 @@ exports.generateMacros = async (req, res, next) => {
       });
     }
 
-    // Validate file types
+    // Validate file types (Excel and CSV)
     const allowedMimeTypes = [
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      'application/vnd.ms-excel',
-      'application/vnd.ms-excel.sheet.macroEnabled.12'
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', // .xlsx
+      'application/vnd.ms-excel',                                          // .xls
+      'application/vnd.ms-excel.sheet.macroEnabled.12',                    // .xlsm
+      'text/csv',                                                          // .csv
+      'application/csv',                                                   // .csv alternative
+      'text/plain',                                                        // .csv sometimes detected as text/plain
+      'application/octet-stream'                                           // fallback for unknown types
     ];
 
     if (!allowedMimeTypes.includes(rawFile.mimetype)) {
       return res.status(400).json({ 
         success: false, 
-        message: `Raw file must be an Excel file (.xlsx, .xls). Received: ${rawFile.mimetype}` 
+        message: `Raw file must be an Excel or CSV file (.xlsx, .xls, .csv). Received: ${rawFile.mimetype}` 
       });
     }
 
     // Validate file extensions
     const rawFileExt = rawFile.originalname.split('.').pop().toLowerCase();
     
-    if (!['xlsx', 'xls'].includes(rawFileExt)) {
+    if (!['xlsx', 'xls', 'csv'].includes(rawFileExt)) {
       return res.status(400).json({ 
         success: false, 
-        message: `Raw file must have .xlsx or .xls extension. Received: .${rawFileExt}` 
+        message: `Raw file must have .xlsx, .xls, or .csv extension. Received: .${rawFileExt}` 
       });
     }
 
@@ -292,6 +297,27 @@ exports.generateMacros = async (req, res, next) => {
     XLSX.utils.book_append_sheet(skuWorkbook, skuSheet, 'Source');
     const skuFileBuffer = XLSX.write(skuWorkbook, { type: 'buffer', bookType: 'xlsx' });
 
+    // Get state config for this brand and seller portal
+    let stateConfigData = null;
+    try {
+      const stateConfig = await StateConfig.findOne({
+        where: {
+          brandId: brandId,
+          sellerPortalId: sellerPortalId
+        }
+      });
+      
+      if (stateConfig && stateConfig.configData && stateConfig.configData.states) {
+        stateConfigData = stateConfig.configData.states;
+        console.log(`Found state config with ${stateConfigData.length} states`);
+      } else {
+        console.log('No state config found for this brand and seller portal');
+      }
+    } catch (stateConfigError) {
+      console.warn('Error fetching state config:', stateConfigError.message);
+      // Continue without state config - it's optional
+    }
+
     // Process macros
     let result;
     let missingSKUs = [];
@@ -301,7 +327,9 @@ exports.generateMacros = async (req, res, next) => {
         rawFile.buffer,
         skuFileBuffer,
         brand.name,
-        date
+        date,
+        sourceSheetData, // SKU data for source-sku sheet
+        stateConfigData  // State config data for source-state sheet
       );
     } catch (error) {
       // Check if error is about missing SKUs
@@ -328,14 +356,14 @@ exports.generateMacros = async (req, res, next) => {
     }
 
     // Save output files
-    const outputFileName = `macros_${brand.name}_${sellerPortalName}_${date}_${uuidv4()}.xlsx`;
+    const outputFileName = `amazon-b2c-process1_${brand.name}_${sellerPortalName}_${date}_${uuidv4()}.xlsx`;
     const outputFilePath = path.join(OUTPUT_DIR, outputFileName);
 
     // Write ExcelJS workbook (with formulas) to file
     await result.workbook.xlsx.writeFile(outputFilePath);
 
     // Also create pivot/report file
-    const pivotFileName = `pivot_${brand.name}_${sellerPortalName}_${date}_${uuidv4()}.xlsx`;
+    const pivotFileName = `amazon-b2c-pivot_${brand.name}_${sellerPortalName}_${date}_${uuidv4()}.xlsx`;
     const pivotFilePath = path.join(OUTPUT_DIR, pivotFileName);
     XLSX.writeFile(result.outputWorkbook, pivotFilePath);
 
@@ -345,7 +373,7 @@ exports.generateMacros = async (req, res, next) => {
       const mappedRow = mapToProcess1Fields(row, brandId, sellerPortalId, date);
       process1Records.push(mappedRow);
     }
-    await Process1.bulkCreate(process1Records);
+    await AmazonB2CProcess1.bulkCreate(process1Records);
 
     // Save Pivot data to database
     const pivotRecords = [];
@@ -353,7 +381,10 @@ exports.generateMacros = async (req, res, next) => {
       const mappedRow = mapToPivotFields(row, brandId, sellerPortalId, date);
       pivotRecords.push(mappedRow);
     }
-    await Pivot.bulkCreate(pivotRecords);
+    await AmazonB2CPivot.bulkCreate(pivotRecords);
+
+    // Get fileType from request body (optional, only for Amazon)
+    const fileType = req.body.fileType || null;
 
     // Save file metadata to macros_files table
     const macrosFile = await MacrosFiles.create({
@@ -365,7 +396,8 @@ exports.generateMacros = async (req, res, next) => {
       process1_file_path: outputFilePath,
       pivot_file_path: pivotFilePath,
       process1_record_count: process1Records.length,
-      pivot_record_count: pivotRecords.length
+      pivot_record_count: pivotRecords.length,
+      fileType: fileType
     });
 
     res.status(201).json({
@@ -409,12 +441,15 @@ exports.getAllBrands = async (req, res, next) => {
 };
 
 /**
- * Get files by seller portal
- * GET /api/macros/brand/:sellerPortalName
+ * Get files by seller portal and brand
+ * GET /api/macros/brand/:sellerPortalName?brandId=...
+ * or
+ * GET /api/macros/files/:brandId/:sellerPortalId
  */
 exports.getFilesByBrand = async (req, res, next) => {
   try {
     const { sellerPortalName } = req.params;
+    const { brandId } = req.query;
     
     // Find seller portal by name
     const sellerPortal = await SellerPortals.findOne({
@@ -429,8 +464,14 @@ exports.getFilesByBrand = async (req, res, next) => {
       });
     }
     
+    // Build where clause - filter by both brandId and sellerPortalId
+    const where = { sellerPortalId: sellerPortal.id };
+    if (brandId) {
+      where.brandId = brandId;
+    }
+    
     const files = await MacrosFiles.findAll({
-      where: { sellerPortalId: sellerPortal.id },
+      where,
       include: [
         { model: Brands, as: 'brand', attributes: ['id', 'name'] },
         { model: SellerPortals, as: 'sellerPortal', attributes: ['id', 'name'] }
@@ -447,6 +488,50 @@ exports.getFilesByBrand = async (req, res, next) => {
       date: file.date,
       process1RecordCount: file.process1_record_count,
       pivotRecordCount: file.pivot_record_count,
+      fileType: file.fileType,
+      createdAt: file.createdAt
+    }));
+
+    res.json({
+      success: true,
+      count: fileList.length,
+      data: fileList
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Get files by brandId and sellerPortalId
+ * GET /api/macros/files/:brandId/:sellerPortalId
+ */
+exports.getFilesByBrandAndPortal = async (req, res, next) => {
+  try {
+    const { brandId, sellerPortalId } = req.params;
+    
+    const files = await MacrosFiles.findAll({
+      where: { 
+        brandId,
+        sellerPortalId
+      },
+      include: [
+        { model: Brands, as: 'brand', attributes: ['id', 'name'] },
+        { model: SellerPortals, as: 'sellerPortal', attributes: ['id', 'name'] }
+      ],
+      order: [['createdAt', 'DESC']]
+    });
+
+    const fileList = files.map(file => ({
+      id: file.id,
+      brandId: file.brandId,
+      brandName: file.brand ? file.brand.name : null,
+      sellerPortalId: file.sellerPortalId,
+      sellerPortalName: file.sellerPortalName || (file.sellerPortal ? file.sellerPortal.name : null),
+      date: file.date,
+      process1RecordCount: file.process1_record_count,
+      pivotRecordCount: file.pivot_record_count,
+      fileType: file.fileType,
       createdAt: file.createdAt
     }));
 
@@ -467,7 +552,7 @@ exports.getFilesByBrand = async (req, res, next) => {
 exports.downloadProcess1 = async (req, res, next) => {
   try {
     const { id } = req.params;
-    console.log('Download Process1 requested for ID:', id);
+    console.log('Download Amazon B2C Process1 requested for ID:', id);
     
     const macrosFile = await MacrosFiles.findByPk(id);
 
@@ -480,10 +565,10 @@ exports.downloadProcess1 = async (req, res, next) => {
     }
 
     if (!macrosFile.process1_file_path) {
-      console.log('Process1 file path is null for ID:', id);
+      console.log('Amazon B2C Process1 file path is null for ID:', id);
       return res.status(404).json({
         success: false,
-        message: 'Process1 file path not found'
+        message: 'Amazon B2C Process1 file path not found'
       });
     }
 
@@ -507,7 +592,7 @@ exports.downloadProcess1 = async (req, res, next) => {
       
       const brand = await Brands.findByPk(macrosFile.brandId);
       const brandName = brand ? brand.name : 'Unknown';
-      const fileName = `Process1_${brandName}_${macrosFile.sellerPortalName || 'Unknown'}_${macrosFile.date}.xlsx`;
+      const fileName = `amazon-b2c-process1_${brandName}_${macrosFile.sellerPortalName || 'Unknown'}_${macrosFile.date}.xlsx`;
       
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
       res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
@@ -515,26 +600,26 @@ exports.downloadProcess1 = async (req, res, next) => {
       res.send(fileBuffer);
       console.log('File sent successfully');
     } catch (readError) {
-      console.error('Error reading Process1 file:', readError);
+      console.error('Error reading Amazon B2C Process1 file:', readError);
       return res.status(500).json({
         success: false,
         message: `Failed to read file: ${readError.message}. File path: ${filePath}`
       });
     }
   } catch (error) {
-    console.error('Download Process1 error:', error);
+    console.error('Download Amazon B2C Process1 error:', error);
     next(error);
   }
 };
 
 /**
- * Download Pivot file
+ * Download Amazon B2C Pivot file
  * GET /api/macros/download/pivot/:id
  */
 exports.downloadPivot = async (req, res, next) => {
   try {
     const { id } = req.params;
-    console.log('Download Pivot requested for ID:', id);
+    console.log('Download Amazon B2C Pivot requested for ID:', id);
     
     const macrosFile = await MacrosFiles.findByPk(id);
 
@@ -547,10 +632,10 @@ exports.downloadPivot = async (req, res, next) => {
     }
 
     if (!macrosFile.pivot_file_path) {
-      console.log('Pivot file path is null for ID:', id);
+      console.log('Amazon B2C Pivot file path is null for ID:', id);
       return res.status(404).json({
         success: false,
-        message: 'Pivot file path not found'
+        message: 'Amazon B2C Pivot file path not found'
       });
     }
 
@@ -574,7 +659,7 @@ exports.downloadPivot = async (req, res, next) => {
       
       const brand = await Brands.findByPk(macrosFile.brandId);
       const brandName = brand ? brand.name : 'Unknown';
-      const fileName = `Pivot_${brandName}_${macrosFile.sellerPortalName || 'Unknown'}_${macrosFile.date}.xlsx`;
+      const fileName = `amazon-b2c-pivot_${brandName}_${macrosFile.sellerPortalName || 'Unknown'}_${macrosFile.date}.xlsx`;
       
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
       res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
@@ -582,27 +667,288 @@ exports.downloadPivot = async (req, res, next) => {
       res.send(fileBuffer);
       console.log('File sent successfully');
     } catch (readError) {
-      console.error('Error reading Pivot file:', readError);
+      console.error('Error reading Amazon B2C Pivot file:', readError);
       return res.status(500).json({
         success: false,
         message: `Failed to read file: ${readError.message}. File path: ${filePath}`
       });
     }
   } catch (error) {
-    console.error('Download Pivot error:', error);
+    console.error('Download Amazon B2C Pivot error:', error);
     next(error);
   }
 };
 
 /**
- * Get Process1 data by brand and date
+ * Download combined Amazon B2C Process1 and Amazon B2C Pivot file (single Excel with two sheets)
+ * GET /api/macros/download/combined/:id
+ */
+exports.downloadCombined = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    console.log('Download Combined file requested for ID:', id);
+    
+    const macrosFile = await MacrosFiles.findByPk(id);
+
+    if (!macrosFile) {
+      console.log('Macros file not found for ID:', id);
+      return res.status(404).json({
+        success: false,
+        message: 'File not found'
+      });
+    }
+
+    if (!macrosFile.process1_file_path || !macrosFile.pivot_file_path) {
+      console.log('One or both file paths are missing');
+      return res.status(404).json({
+        success: false,
+        message: 'Amazon B2C Process1 or Amazon B2C Pivot file path not found'
+      });
+    }
+
+    const process1Path = macrosFile.process1_file_path;
+    const pivotPath = macrosFile.pivot_file_path;
+    
+    // Check if both files exist
+    const process1Exists = await fs.access(process1Path).then(() => true).catch(() => false);
+    const pivotExists = await fs.access(pivotPath).then(() => true).catch(() => false);
+
+    if (!process1Exists || !pivotExists) {
+      return res.status(404).json({
+        success: false,
+        message: `One or both files not found. Amazon B2C Process1: ${process1Exists}, Amazon B2C Pivot: ${pivotExists}`
+      });
+    }
+
+    try {
+      // Create a new ExcelJS workbook
+      const combinedWorkbook = new ExcelJS.Workbook();
+
+      // Read Amazon B2C Process1 file and add as first sheet
+      const process1Workbook = new ExcelJS.Workbook();
+      await process1Workbook.xlsx.readFile(process1Path);
+      const process1Worksheet = process1Workbook.worksheets[0];
+      
+      // Copy Process1 sheet to combined workbook
+      const process1Sheet = combinedWorkbook.addWorksheet('amazon-b2c-process1');
+      process1Worksheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+        const newRow = process1Sheet.getRow(rowNumber);
+        row.eachCell({ includeEmpty: false }, (cell, colNumber) => {
+          const newCell = newRow.getCell(colNumber);
+          newCell.value = cell.value;
+          newCell.style = cell.style;
+          if (cell.formula) {
+            newCell.formula = cell.formula;
+          }
+        });
+      });
+      
+      // Copy column widths from Process1
+      process1Worksheet.columns.forEach((column, index) => {
+        if (column.width) {
+          process1Sheet.getColumn(index + 1).width = column.width;
+        }
+      });
+
+      // Read Amazon B2C Pivot file and add ALL sheets from it
+      const pivotWorkbook = XLSX.readFile(pivotPath);
+      console.log(`Pivot file has ${pivotWorkbook.SheetNames.length} sheets: ${pivotWorkbook.SheetNames.join(', ')}`);
+      
+      // Loop through ALL sheets in the pivot workbook
+      for (const sheetName of pivotWorkbook.SheetNames) {
+        // Skip amazon-b2c-process1 if it exists in pivot file (already added from process1 file)
+        if (sheetName === 'amazon-b2c-process1') {
+          console.log(`Skipping ${sheetName} from pivot file (already added from process1 file)`);
+          continue;
+        }
+        
+        const pivotWorksheet = pivotWorkbook.Sheets[sheetName];
+        
+        // Add sheet to combined workbook
+        const newSheet = combinedWorkbook.addWorksheet(sheetName);
+        
+        // For amazon-b2c-pivot sheet, preserve formulas
+        if (sheetName === 'amazon-b2c-pivot') {
+          // Get the range of the sheet
+          const range = XLSX.utils.decode_range(pivotWorksheet['!ref'] || 'A1');
+          const rowCount = range.e.r - range.s.r + 1;
+          console.log(`Adding sheet: ${sheetName} with ${rowCount - 1} data rows (preserving formulas)`);
+          
+          // Copy each cell, preserving formulas
+          for (let R = range.s.r; R <= range.e.r; R++) {
+            for (let C = range.s.c; C <= range.e.c; C++) {
+              const cellAddress = XLSX.utils.encode_cell({ r: R, c: C });
+              const cell = pivotWorksheet[cellAddress];
+              
+              if (cell) {
+                const excelRow = R + 1; // ExcelJS is 1-indexed
+                const excelCol = C + 1;
+                const targetCell = newSheet.getCell(excelRow, excelCol);
+                
+                // Check if cell has a formula
+                if (cell.f) {
+                  targetCell.value = { formula: cell.f };
+                } else if (cell.v !== undefined) {
+                  targetCell.value = cell.v;
+                }
+                
+                // Style header row
+                if (R === 0) {
+                  targetCell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+                  targetCell.fill = {
+                    type: 'pattern',
+                    pattern: 'solid',
+                    fgColor: { argb: 'FF2F5597' }
+                  };
+                  targetCell.alignment = { vertical: 'middle', horizontal: 'center' };
+                }
+              }
+            }
+          }
+          
+          // Auto-fit columns
+          newSheet.columns.forEach((column) => {
+            let maxLength = 0;
+            column.eachCell({ includeEmpty: false }, (cell) => {
+              const cellValue = cell.value ? cell.value.toString() : '';
+              if (cellValue.length > maxLength) {
+                maxLength = cellValue.length;
+              }
+            });
+            column.width = Math.min(Math.max(maxLength + 2, 10), 50);
+          });
+        } else {
+          // For other sheets, use JSON conversion (no formulas needed)
+          const sheetData = XLSX.utils.sheet_to_json(pivotWorksheet, { defval: '', raw: false });
+          console.log(`Adding sheet: ${sheetName} with ${sheetData.length} rows`);
+          
+          // Add headers and data if data exists
+          if (sheetData.length > 0) {
+            const headers = Object.keys(sheetData[0]);
+            newSheet.addRow(headers);
+            
+            // Style header row
+            const headerRow = newSheet.getRow(1);
+            headerRow.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+            headerRow.fill = {
+              type: 'pattern',
+              pattern: 'solid',
+              fgColor: { argb: 'FF2F5597' }
+            };
+            headerRow.alignment = { vertical: 'middle', horizontal: 'center' };
+            
+            // Add data rows
+            sheetData.forEach((row) => {
+              const rowData = headers.map(header => row[header] || '');
+              newSheet.addRow(rowData);
+            });
+            
+            // Auto-fit columns
+            newSheet.columns.forEach((column) => {
+              let maxLength = 0;
+              column.eachCell({ includeEmpty: false }, (cell) => {
+                const cellValue = cell.value ? cell.value.toString() : '';
+                if (cellValue.length > maxLength) {
+                  maxLength = cellValue.length;
+                }
+              });
+              column.width = Math.min(Math.max(maxLength + 2, 10), 50);
+            });
+          }
+        }
+      }
+      
+      console.log(`Combined workbook has ${combinedWorkbook.worksheets.length} sheets: ${combinedWorkbook.worksheets.map(ws => ws.name).join(', ')}`);
+
+      // Generate file buffer
+      const buffer = await combinedWorkbook.xlsx.writeBuffer();
+      
+      const brand = await Brands.findByPk(macrosFile.brandId);
+      const brandName = brand ? brand.name : 'Unknown';
+      const fileName = `Macros_${brandName}_${macrosFile.sellerPortalName || 'Unknown'}_${macrosFile.date}.xlsx`;
+      
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+      res.setHeader('Content-Length', buffer.length);
+      res.send(buffer);
+      console.log('Combined file sent successfully');
+    } catch (error) {
+      console.error('Error creating combined file:', error);
+      return res.status(500).json({
+        success: false,
+        message: `Failed to create combined file: ${error.message}`
+      });
+    }
+  } catch (error) {
+    console.error('Download Combined error:', error);
+    next(error);
+  }
+};
+
+/**
+ * Delete macros file
+ * DELETE /api/macros/files/:id
+ */
+exports.deleteMacrosFile = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    console.log('Delete macros file requested for ID:', id);
+    
+    const macrosFile = await MacrosFiles.findByPk(id);
+
+    if (!macrosFile) {
+      console.log('Macros file not found for ID:', id);
+      return res.status(404).json({
+        success: false,
+        message: 'File not found'
+      });
+    }
+
+    // Delete physical files if they exist
+    const filesToDelete = [];
+    if (macrosFile.process1_file_path) {
+      filesToDelete.push(macrosFile.process1_file_path);
+    }
+    if (macrosFile.pivot_file_path) {
+      filesToDelete.push(macrosFile.pivot_file_path);
+    }
+
+    // Delete files from filesystem
+    for (const filePath of filesToDelete) {
+      try {
+        const fileExists = await fs.access(filePath).then(() => true).catch(() => false);
+        if (fileExists) {
+          await fs.unlink(filePath);
+          console.log('Deleted file:', filePath);
+        }
+      } catch (fileError) {
+        console.error(`Error deleting file ${filePath}:`, fileError);
+        // Continue even if file deletion fails
+      }
+    }
+
+    // Delete database record
+    await macrosFile.destroy();
+
+    res.json({
+      success: true,
+      message: 'Macros file deleted successfully'
+    });
+  } catch (error) {
+    console.error('Delete macros file error:', error);
+    next(error);
+  }
+};
+
+/**
+ * Get Amazon B2C Process1 data by brand and date
  * GET /api/macros/process1/:brandId/:sellerPortalId/:date
  */
 exports.getProcess1Data = async (req, res, next) => {
   try {
     const { brandId, sellerPortalId, date } = req.params;
     
-    const data = await Process1.findAll({
+    const data = await AmazonB2CProcess1.findAll({
       where: { 
         brandId: brandId,
         sellerPortalId: sellerPortalId,
@@ -622,14 +968,14 @@ exports.getProcess1Data = async (req, res, next) => {
 };
 
 /**
- * Get Pivot data by brand and date
+ * Get Amazon B2C Pivot data by brand and date
  * GET /api/macros/pivot/:brandId/:sellerPortalId/:date
  */
 exports.getPivotData = async (req, res, next) => {
   try {
     const { brandId, sellerPortalId, date } = req.params;
     
-    const data = await Pivot.findAll({
+    const data = await AmazonB2CPivot.findAll({
       where: { 
         brandId: brandId,
         sellerPortalId: sellerPortalId,

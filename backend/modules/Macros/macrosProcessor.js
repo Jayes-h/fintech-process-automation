@@ -721,24 +721,24 @@ function applyFormulas(ws, sourceSheetName = 'Source') {
 
   for (let row = 2; row <= lastRow; row++) {
     try {
-      // Column FG (O): =VLOOKUP(Sku,Source!$A:$C,2,FALSE)
+      // Column FG (O): =VLOOKUP(Sku,'source-sku'!$A$2:$B$229,2,FALSE)
       if (colSku && colFG) {
         ws.getCell(`${colFG}${row}`).value = {
-          formula: `VLOOKUP(${colSku}${row},${sourceSheetName}!$A:$C,2,FALSE)`
+          formula: `VLOOKUP(${colSku}${row},'source-sku'!$A:$B,2,FALSE)`
         };
       }
 
-      // Column Ship To State Tally Ledger (AA): =VLOOKUP(Ship To State,Source!$F:$G,2,0)
+      // Column Ship To State Tally Ledger (AA): =VLOOKUP(Ship To State,'source-state'!$A$2:$C$37,3,0)
       if (colShipToState && colShipToStateTally) {
         ws.getCell(`${colShipToStateTally}${row}`).value = {
-          formula: `VLOOKUP(${colShipToState}${row},${sourceSheetName}!$F:$G,2,0)`
+          formula: `VLOOKUP(${colShipToState}${row},'source-state'!$A$2:$C$37,3,0)`
         };
       }
 
-      // Column Final Invoice No. (AB): =VLOOKUP(Ship To State Tally Ledger,Source!$G$1:$H$37,2,FALSE)
-      if (colShipToStateTally && colFinalInvoiceNo) {
+      // Column Final Invoice No. (AB): =VLOOKUP(Ship To State,'source-state'!$A$2:$C$37,2,FALSE)
+      if (colShipToState && colFinalInvoiceNo) {
         ws.getCell(`${colFinalInvoiceNo}${row}`).value = {
-          formula: `VLOOKUP(${colShipToStateTally}${row},${sourceSheetName}!$G$1:$H$37,2,FALSE)`
+          formula: `VLOOKUP(${colShipToState}${row},'source-state'!$A$2:$C$37,2,FALSE)`
         };
       }
 
@@ -1168,7 +1168,7 @@ function generatePivot(process1Data, sourceSheet = null) {
 /**
  * Main processing function
  */
-async function processMacros(rawFileBuffer, skuFileBuffer, brandName, date) {
+async function processMacros(rawFileBuffer, skuFileBuffer, brandName, date, skuData = null, stateConfigData = null) {
   try {
     // Validate file buffers
     if (!rawFileBuffer || rawFileBuffer.length === 0) {
@@ -1183,17 +1183,18 @@ async function processMacros(rawFileBuffer, skuFileBuffer, brandName, date) {
     // ExcelJS only supports .xlsx, so we need to convert .xls files first
     let workbook, skuWorkbook;
 
-    // Read raw file with XLSX (handles both .xls and .xlsx)
+    // Read raw file with XLSX (handles .xls, .xlsx, and .csv)
     let rawWorkbookXLSX;
     try {
       rawWorkbookXLSX = XLSX.read(rawFileBuffer, { 
         type: 'buffer', 
         cellDates: true,
         cellNF: false,
-        cellText: false
+        cellText: false,
+        raw: false
       });
     } catch (xlsxError) {
-      throw new Error(`Failed to read raw file: ${xlsxError.message}. Please ensure the file is a valid Excel file (.xls or .xlsx).`);
+      throw new Error(`Failed to read raw file: ${xlsxError.message}. Please ensure the file is a valid Excel or CSV file (.xls, .xlsx, or .csv).`);
     }
 
     if (!rawWorkbookXLSX.SheetNames || rawWorkbookXLSX.SheetNames.length === 0) {
@@ -1263,14 +1264,14 @@ async function processMacros(rawFileBuffer, skuFileBuffer, brandName, date) {
       throw new Error(`Failed to load SKU file into ExcelJS: ${excelJSError.message}. The file was successfully read and converted, but ExcelJS cannot process it.`);
     }
 
-    // Get or create "Proccess 1" worksheet
-    let ws = workbook.getWorksheet('Proccess 1');
+    // Get or create "amazon-b2c-process1" worksheet
+    let ws = workbook.getWorksheet('amazon-b2c-process1');
     if (!ws) {
-      ws = workbook.getWorksheet('Process 1') || workbook.getWorksheet('Process1');
+      ws = workbook.getWorksheet('Process 1') || workbook.getWorksheet('Process1') || workbook.getWorksheet('Proccess 1');
       if (!ws) {
         ws = workbook.worksheets[0];
         if (ws) {
-          ws.name = 'Proccess 1';
+          ws.name = 'amazon-b2c-process1';
         }
       }
     }
@@ -1318,7 +1319,7 @@ async function processMacros(rawFileBuffer, skuFileBuffer, brandName, date) {
     // STEP 1: INSERT REQUIRED COLUMNS
     // ============================================================
     console.log('Step 1: Insert required columns');
-    insertColumnsAndRenameHeaders(workbook, 'Proccess 1');
+    insertColumnsAndRenameHeaders(workbook, 'amazon-b2c-process1');
 
     // ============================================================
     // STEP 2: APPLY FORMULAS
@@ -1343,6 +1344,33 @@ async function processMacros(rawFileBuffer, skuFileBuffer, brandName, date) {
       }
     });
 
+    // Create lookup maps from skuData and stateConfigData for manual VLOOKUP calculation
+    // These replace the Excel VLOOKUP formulas since the source sheets don't exist in the workbook yet
+    const skuLookupMap = {}; // SKU -> FG
+    if (skuData && Array.isArray(skuData)) {
+      for (const item of skuData) {
+        const sku = String(item.SKU || item.sku || '').trim();
+        const fg = item.FG || item.fg || '';
+        if (sku) {
+          skuLookupMap[sku] = fg;
+        }
+      }
+      console.log(`✓ Created SKU lookup map with ${Object.keys(skuLookupMap).length} entries`);
+    }
+    
+    const stateLookupMap = {}; // State -> { ledger, invoiceNo }
+    if (stateConfigData && Array.isArray(stateConfigData)) {
+      for (const item of stateConfigData) {
+        const state = String(item.States || item.states || '').trim();
+        const ledger = item['Amazon Pay Ledger'] || item.amazonPayLedger || '';
+        const invoiceNo = item['Invoice No.'] || item.invoiceNo || '';
+        if (state) {
+          stateLookupMap[state] = { ledger, invoiceNo };
+        }
+      }
+      console.log(`✓ Created State lookup map with ${Object.keys(stateLookupMap).length} entries`);
+    }
+
     // Initialize formula evaluator with worksheet and source sheet
     const evaluator = new FormulaEvaluator(ws, mainSourceSheet);
 
@@ -1351,12 +1379,15 @@ async function processMacros(rawFileBuffer, skuFileBuffer, brandName, date) {
     const lastRow = Math.min(ws.rowCount || 50000, 50000);
     const missingSKUsSet = new Set();
     
-    // Find SKU column number
+    // Find SKU and Ship To State column numbers for manual VLOOKUP
     let skuColNumber = null;
+    let shipToStateColNumber = null;
     for (const [colNum, headerName] of Object.entries(columnMap)) {
       if (headerName === 'Sku' || headerName === 'SKU') {
         skuColNumber = parseInt(colNum);
-        break;
+      }
+      if (headerName === 'Ship To State') {
+        shipToStateColNumber = parseInt(colNum);
       }
     }
     
@@ -1367,11 +1398,18 @@ async function processMacros(rawFileBuffer, skuFileBuffer, brandName, date) {
       let rowHasError = false;
       let skuValue = null;
 
-      // Get SKU value first if column exists
+      // Get SKU and Ship To State values first for manual VLOOKUP
+      let shipToStateValue = null;
       if (skuColNumber) {
         const skuCell = row.getCell(skuColNumber);
         if (skuCell && skuCell.value) {
           skuValue = String(skuCell.value).trim();
+        }
+      }
+      if (shipToStateColNumber) {
+        const stateCell = row.getCell(shipToStateColNumber);
+        if (stateCell && stateCell.value) {
+          shipToStateValue = String(stateCell.value).trim();
         }
       }
 
@@ -1410,6 +1448,24 @@ async function processMacros(rawFileBuffer, skuFileBuffer, brandName, date) {
         }
       });
 
+      // Manually calculate VLOOKUP values using lookup maps
+      // This replaces the Excel formulas that can't be evaluated during processing
+      
+      // FG = VLOOKUP(SKU, source-sku, 2, FALSE)
+      if (skuValue && skuLookupMap[skuValue]) {
+        rowData['FG'] = skuLookupMap[skuValue];
+      }
+      
+      // Ship To State Tally Ledger = VLOOKUP(Ship To State, source-state, 3, 0) -> Amazon Pay Ledger
+      if (shipToStateValue && stateLookupMap[shipToStateValue]) {
+        rowData['Ship To State Tally Ledger'] = stateLookupMap[shipToStateValue].ledger;
+      }
+      
+      // Final Invoice No. = VLOOKUP(Ship To State, source-state, 2, FALSE) -> Invoice No.
+      if (shipToStateValue && stateLookupMap[shipToStateValue]) {
+        rowData['Final Invoice No.'] = stateLookupMap[shipToStateValue].invoiceNo;
+      }
+
       // Only add row if it has some data and no missing SKU errors
       if (hasData && !rowHasError) {
         process1Json.push(rowData);
@@ -1443,12 +1499,106 @@ async function processMacros(rawFileBuffer, skuFileBuffer, brandName, date) {
     // ============================================================
     console.log('Step 5: Create Pivot 1 & Report1 sheets');
     const outputWorkbook = XLSX.utils.book_new();
+    // Manually calculate VLOOKUP values for pivot sheet columns B, C, D
+    // This implements the VLOOKUP logic in JavaScript for reliable calculation
+    // B (Final Invoice No.) = VLOOKUP(Seller Gstin, process1, 'Final Invoice No.', exact match)
+    // C (Ship To State Tally Ledger) = VLOOKUP(Seller Gstin, process1, 'Ship To State Tally Ledger', exact match)
+    // D (FG) = VLOOKUP(Seller Gstin, process1, 'FG', exact match)
+    
+    // Create a lookup map from process1Json for fast lookups by Seller Gstin
+    const process1LookupMap = {};
+    for (const row of process1Json) {
+      const gstin = row['Seller Gstin'];
+      if (gstin && !process1LookupMap[gstin]) {
+        // Store first match (like VLOOKUP with exact match)
+        process1LookupMap[gstin] = {
+          'Final Invoice No.': row['Final Invoice No.'] || '',
+          'Ship To State Tally Ledger': row['Ship To State Tally Ledger'] || '',
+          'FG': row['FG'] || ''
+        };
+      }
+    }
+    console.log(`✓ Created lookup map with ${Object.keys(process1LookupMap).length} unique Seller GSTINs`);
+    
+    // Update pivotData with looked-up values
+    for (const pivotRow of pivotData) {
+      const gstin = pivotRow['Seller Gstin'];
+      const lookupData = process1LookupMap[gstin];
+      if (lookupData) {
+        pivotRow['Final Invoice No.'] = lookupData['Final Invoice No.'];
+        pivotRow['Ship To State Tally Ledger'] = lookupData['Ship To State Tally Ledger'];
+        pivotRow['FG'] = lookupData['FG'];
+      }
+    }
+    console.log(`✓ Applied VLOOKUP values to ${pivotData.length} pivot rows`);
+    
     const pivotSheet = XLSX.utils.json_to_sheet(pivotData);
-    XLSX.utils.book_append_sheet(outputWorkbook, pivotSheet, 'Pivot 1');
+    
+    XLSX.utils.book_append_sheet(outputWorkbook, pivotSheet, 'amazon-b2c-pivot');
     
     // Report1 is same as Pivot but values only
     const report1Sheet = XLSX.utils.json_to_sheet(pivotData);
     XLSX.utils.book_append_sheet(outputWorkbook, report1Sheet, 'Report1');
+
+    // ============================================================
+    // STEP 6: ADD AMAZON-B2C-PROCESS1 SHEET TO OUTPUT WORKBOOK
+    // ============================================================
+    console.log('Step 6: Add amazon-b2c-process1 sheet to output workbook');
+    const process1Sheet = XLSX.utils.json_to_sheet(process1Json);
+    XLSX.utils.book_append_sheet(outputWorkbook, process1Sheet, 'amazon-b2c-process1');
+    console.log(`✓ Added amazon-b2c-process1 sheet with ${process1Json.length} rows`);
+
+    // ============================================================
+    // STEP 7: ADD SOURCE-SKU SHEET TO OUTPUT WORKBOOK
+    // ============================================================
+    console.log('Step 7: Add source-sku sheet to output workbook');
+    try {
+      if (skuData && Array.isArray(skuData) && skuData.length > 0) {
+        // SKU data structure: [{ SKU, FG }]
+        const sourceSkuSheet = XLSX.utils.json_to_sheet(skuData);
+        XLSX.utils.book_append_sheet(outputWorkbook, sourceSkuSheet, 'source-sku');
+        console.log(`✓ Added source-sku sheet to output workbook with ${skuData.length} rows`);
+      } else {
+        console.log('⚠ No SKU data available, adding empty sheet with headers');
+        // Add empty sheet with headers
+        const emptySkuSheet = XLSX.utils.json_to_sheet([], { header: ['SKU', 'FG'] });
+        XLSX.utils.book_append_sheet(outputWorkbook, emptySkuSheet, 'source-sku');
+        console.log(`✓ Added empty source-sku sheet with headers`);
+      }
+      console.log(`Output workbook now has ${outputWorkbook.SheetNames.length} sheets: ${outputWorkbook.SheetNames.join(', ')}`);
+    } catch (skuError) {
+      console.error('Error adding source-sku sheet:', skuError);
+      console.error('Error stack:', skuError.stack);
+    }
+
+    // ============================================================
+    // STEP 8: ADD SOURCE-STATE SHEET TO OUTPUT WORKBOOK
+    // ============================================================
+    console.log('Step 8: Add source-state sheet to output workbook');
+    try {
+      if (stateConfigData && Array.isArray(stateConfigData) && stateConfigData.length > 0) {
+        // State config data structure: [{ States, 'Amazon Pay Ledger', 'Invoice No.' }]
+        const sourceStateSheet = XLSX.utils.json_to_sheet(stateConfigData);
+        XLSX.utils.book_append_sheet(outputWorkbook, sourceStateSheet, 'source-state');
+        console.log(`✓ Added source-state sheet to output workbook with ${stateConfigData.length} rows`);
+      } else {
+        console.log('⚠ No state config data available, adding empty sheet with headers');
+        // Add empty sheet with headers
+        const emptyStateSheet = XLSX.utils.json_to_sheet([], { header: ['States', 'Amazon Pay Ledger', 'Invoice No.'] });
+        XLSX.utils.book_append_sheet(outputWorkbook, emptyStateSheet, 'source-state');
+        console.log(`✓ Added empty source-state sheet with headers`);
+      }
+      console.log(`Output workbook now has ${outputWorkbook.SheetNames.length} sheets: ${outputWorkbook.SheetNames.join(', ')}`);
+    } catch (stateError) {
+      console.error('Error adding source-state sheet:', stateError);
+      console.error('Error stack:', stateError.stack);
+    }
+
+    // Final verification: Log all sheets in output workbook
+    console.log('\n========== FINAL OUTPUT WORKBOOK SHEETS ==========');
+    console.log(`Total sheets: ${outputWorkbook.SheetNames.length}`);
+    console.log(`Sheet names: ${outputWorkbook.SheetNames.join(', ')}`);
+    console.log('===================================================\n');
 
     console.log('========== MACROS PROCESSING COMPLETE ==========\n');
 

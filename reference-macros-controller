@@ -1,0 +1,988 @@
+
+const Process1 = require('../models/Process1');
+const Pivot = require('../models/Pivot');
+const MacrosFiles = require('../models/MacrosFiles');
+const Brands = require('../models/Brands');
+const SellerPortals = require('../models/SellerPortals');
+const SKU = require('../models/SKU');
+const SalesPortalStateConfig = require('../models/SalesPortalStateConfig');
+const { processMacros, generatePivot, validateProcess1File, validatePivotProcess1Sum } = require('../modules/Macros/macrosProcessor');
+const XLSX = require('xlsx-js-style');
+const ExcelJS = require('exceljs');
+const path = require('path');
+const fs = require('fs').promises;
+const { Op } = require('sequelize');
+const { v4: uuidv4 } = require('uuid');
+
+// Directory to store uploaded files
+const UPLOAD_DIR = path.join(__dirname, '../uploads/macros');
+const OUTPUT_DIR = path.join(__dirname, '../outputs/macros');
+
+// Ensure directories exist
+async function ensureDirectories() {
+  try {
+    await fs.mkdir(UPLOAD_DIR, { recursive: true });
+    await fs.mkdir(OUTPUT_DIR, { recursive: true });
+  } catch (error) {
+    // console.error('Error creating directories:', error);
+  }
+}
+
+// Initialize directories on module load
+ensureDirectories();
+
+/**
+ * Helper function to get column value with case-insensitive matching
+ */
+function getColumnValueCaseInsensitive(row, columnName) {
+  // Try exact match first
+  if (columnName in row) {
+    return row[columnName];
+  }
+  // Try case-insensitive match
+  const normalized = columnName.toLowerCase().trim().replace(/\s+/g, ' ');
+  for (const key in row) {
+    const keyNormalized = key.toLowerCase().trim().replace(/\s+/g, ' ');
+    if (keyNormalized === normalized) {
+      return row[key];
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Map Excel column names to database field names
+ */
+function mapToProcess1Fields(row, brandId, sellerPortalId, date) {
+  return {
+    brandId: brandId,
+    sellerPortalId: sellerPortalId,
+    date: date,
+    seller_gstin: row['Seller Gstin'] || null,
+    invoice_number: row['Invoice Number'] || row['Final Invoice No.'] || null,
+    invoice_date: row['Invoice Date'] || null,
+    transaction_type: row['Transaction Type'] || null,
+    order_id: row['Order Id'] || null,
+    shipment_id: row['Shipment Id'] || null,
+    shipment_date: row['Shipment Date'] || null,
+    order_date: row['Order Date'] || null,
+    shipment_item_id: row['Shipment Item Id'] || null,
+    quantity: parseFloat(row['Quantity'] || 0) || null,
+    item_description: row['Item Description'] || null,
+    asin: row['Asin'] || null,
+    hsn_sac: row['Hsn/sac'] || null,
+    sku: row['Sku'] || null,
+    fg: row['FG'] || null,
+    product_tax_code: row['Product Tax Code'] || null,
+    bill_from_city: row['Bill From City'] || null,
+    bill_from_state: row['Bill From State'] || null,
+    bill_from_country: row['Bill From Country'] || null,
+    bill_from_postal_code: row['Bill From Postal Code'] || null,
+    ship_from_city: row['Ship From City'] || null,
+    ship_from_state: row['Ship From State'] || null,
+    ship_from_country: row['Ship From Country'] || null,
+    ship_from_postal_code: row['Ship From Postal Code'] || null,
+    ship_to_city: row['Ship To City'] || null,
+    ship_to_state: row['Ship To State'] || null,
+    ship_to_state_tally_ledger: row['Ship To State Tally Ledger'] || null,
+    final_invoice_no: row['Final Invoice No.'] || null,
+    ship_to_country: row['Ship To Country'] || null,
+    ship_to_postal_code: row['Ship To Postal Code'] || null,
+    invoice_amount: parseFloat(row['Invoice Amount'] || 0) || null,
+    tax_exclusive_gross: parseFloat(row['Tax Exclusive Gross'] || 0) || null,
+    total_tax_amount: parseFloat(row['Total Tax Amount'] || 0) || null,
+    cgst_rate: parseFloat(row['Cgst Rate'] || 0) || null,
+    sgst_rate: parseFloat(row['Sgst Rate'] || 0) || null,
+    utgst_rate: parseFloat(row['Utgst Rate'] || 0) || null,
+    igst_rate: parseFloat(row['Igst Rate'] || 0) || null,
+    compensatory_cess_rate: parseFloat(row['Compensatory Cess Rate'] || 0) || null,
+    principal_amount: parseFloat(row['Principal Amount'] || 0) || null,
+    principal_amount_basis: parseFloat(row['Principal Amount Basis'] || 0) || null,
+    cgst_tax: parseFloat(row['Cgst Tax'] || 0) || null,
+    sgst_tax: parseFloat(row['Sgst Tax'] || 0) || null,
+    igst_tax: parseFloat(row['Igst Tax'] || 0) || null,
+    utgst_tax: parseFloat(row['Utgst Tax'] || 0) || null,
+    compensatory_cess_tax: parseFloat(row['Compensatory Cess Tax'] || 0) || null,
+    final_tax_rate: parseFloat(row['Final Tax rate'] || 0) || null,
+    final_taxable_sales_value: parseFloat(row['Final Taxable Sales Value'] || 0) || null,
+    final_taxable_shipping_value: parseFloat(row['Final Taxable Shipping Value'] || 0) || null,
+    final_cgst_tax: parseFloat(row['Final CGST Tax'] || 0) || null,
+    final_sgst_tax: parseFloat(row['Final SGST Tax'] || 0) || null,
+    final_igst_tax: parseFloat(row['Final IGST Tax'] || 0) || null,
+    final_shipping_cgst_tax: parseFloat(row['Final Shipping CGST Tax'] || 0) || null,
+    final_shipping_sgst_tax: parseFloat(row['Final Shipping SGST Tax'] || 0) || null,
+    final_shipping_igst_tax: parseFloat(row['Final Shipping IGST Tax'] || 0) || null,
+    shipping_amount: parseFloat(row['Shipping Amount'] || 0) || null,
+    shipping_amount_basis: parseFloat(row['Shipping Amount Basis'] || 0) || null,
+    shipping_cgst_tax: parseFloat(row['Shipping Cgst Tax'] || 0) || null,
+    shipping_sgst_tax: parseFloat(row['Shipping Sgst Tax'] || 0) || null,
+    shipping_utgst_tax: parseFloat(row['Shipping Utgst Tax'] || 0) || null,
+    shipping_igst_tax: parseFloat(row['Shipping Igst Tax'] || 0) || null,
+    shipping_cess_tax_amount: parseFloat(row['Shipping Cess Tax Amount'] || 0) || null,
+    gift_wrap_amount: parseFloat(row['Gift Wrap Amount'] || 0) || null,
+    gift_wrap_amount_basis: parseFloat(row['Gift Wrap Amount Basis'] || 0) || null,
+    gift_wrap_cgst_tax: parseFloat(row['Gift Wrap Cgst Tax'] || 0) || null,
+    gift_wrap_sgst_tax: parseFloat(row['Gift Wrap Sgst Tax'] || 0) || null,
+    gift_wrap_utgst_tax: parseFloat(row['Gift Wrap Utgst Tax'] || 0) || null,
+    gift_wrap_igst_tax: parseFloat(row['Gift Wrap Igst Tax'] || 0) || null,
+    gift_wrap_compensatory_cess_tax: parseFloat(row['Gift Wrap Compensatory Cess Tax'] || 0) || null,
+    item_promo_discount: parseFloat(row['Item Promo Discount'] || 0) || null,
+    item_promo_discount_basis: parseFloat(row['Item Promo Discount Basis'] || 0) || null,
+    item_promo_tax: parseFloat(row['Item Promo Tax'] || 0) || null,
+    shipping_promo_discount: parseFloat(row['Shipping Promo Discount'] || 0) || null,
+    shipping_promo_discount_basis: parseFloat(row['Shipping Promo Discount Basis'] || 0) || null,
+    shipping_promo_tax: parseFloat(row['Shipping Promo Tax'] || 0) || null,
+    gift_wrap_promo_discount: parseFloat(row['Gift Wrap Promo Discount'] || 0) || null,
+    gift_wrap_promo_discount_basis: parseFloat(row['Gift Wrap Promo Discount Basis'] || 0) || null,
+    gift_wrap_promo_tax: parseFloat(row['Gift Wrap Promo Tax'] || 0) || null,
+    tcs_cgst_rate: parseFloat(getColumnValueCaseInsensitive(row, 'Tcs Cgst Rate') || 0) || null,
+    tcs_cgst_amount: parseFloat(getColumnValueCaseInsensitive(row, 'Tcs Cgst Amount') || 0) || null,
+    tcs_sgst_rate: parseFloat(getColumnValueCaseInsensitive(row, 'Tcs Sgst Rate') || 0) || null,
+    tcs_sgst_amount: parseFloat(getColumnValueCaseInsensitive(row, 'Tcs Sgst Amount') || 0) || null,
+    tcs_utgst_rate: parseFloat(getColumnValueCaseInsensitive(row, 'Tcs Utgst Rate') || 0) || null,
+    tcs_utgst_amount: parseFloat(getColumnValueCaseInsensitive(row, 'Tcs Utgst Amount') || 0) || null,
+    tcs_igst_rate: parseFloat(getColumnValueCaseInsensitive(row, 'Tcs Igst Rate') || 0) || null,
+    tcs_igst_amount: parseFloat(getColumnValueCaseInsensitive(row, 'Tcs Igst Amount') || 0) || null,
+    final_amount_receivable: parseFloat(row['Final Amount Receivable'] || 0) || null,
+    warehouse_id: getColumnValueCaseInsensitive(row, 'Warehouse Id') || null,
+    fulfillment_channel: getColumnValueCaseInsensitive(row, 'Fulfillment Channel') || null,
+    payment_method_code: getColumnValueCaseInsensitive(row, 'Payment Method Code') || null,
+    credit_note_no: getColumnValueCaseInsensitive(row, 'Credit Note No') || null,
+    credit_note_date: getColumnValueCaseInsensitive(row, 'Credit Note Date') || null,
+    credit_note: getColumnValueCaseInsensitive(row, 'Credit Note') || null,
+    seller_portal: getColumnValueCaseInsensitive(row, 'Seller Portal') || getColumnValueCaseInsensitive(row, 'Seller Portal') || null
+  };
+}
+
+/**
+ * Map pivot data to database fields
+ */
+function mapToPivotFields(row, brandId, sellerPortalId, date) {
+  return {
+    brandId: brandId,
+    sellerPortalId: sellerPortalId,
+    date: date,
+    seller_gstin: row['Seller Gstin'] || null,
+    final_invoice_no: row['Final Invoice No.'] || null,
+    ship_to_state_tally_ledger: row['Ship To State Tally Ledger'] || null,
+    fg: row['FG'] || null,
+    sum_of_quantity: parseFloat(row['Sum of Quantity'] || 0) || 0,
+    sum_of_final_taxable_sales_value: parseFloat(row['Sum of Final Taxable Sales Value'] || 0) || 0,
+    sum_of_final_cgst_tax: parseFloat(row['Sum of Final CGST Tax'] || 0) || 0,
+    sum_of_final_sgst_tax: parseFloat(row['Sum of Final SGST Tax'] || 0) || 0,
+    sum_of_final_igst_tax: parseFloat(row['Sum of Final IGST Tax'] || 0) || 0,
+    sum_of_final_taxable_shipping_value: parseFloat(row['Sum of Final Taxable Shipping Value'] || 0) || 0,
+    sum_of_final_shipping_cgst_tax: parseFloat(row['Sum of Final Shipping CGST Tax'] || 0) || 0,
+    sum_of_final_shipping_sgst_tax: parseFloat(row['Sum of Final Shipping SGST Tax'] || 0) || 0,
+    sum_of_final_shipping_igst_tax: parseFloat(row['Sum of Final Shipping IGST Tax'] || 0) || 0,
+    sum_of_tcs_cgst_amount: parseFloat(row['Sum of Tcs Cgst Amount'] || 0) || 0,
+    sum_of_tcs_sgst_amount: parseFloat(row['Sum of Tcs Sgst Amount'] || 0) || 0,
+    sum_of_tcs_igst_amount: parseFloat(row['Sum of Tcs Igst Amount'] || 0) || 0,
+    sum_of_final_amount_receivable: parseFloat(row['Sum of Final Amount Receivable'] || 0) || 0
+  };
+}
+
+/**
+ * Generate macros - Upload files and process
+ * POST /api/macros/generate
+ */
+exports.generateMacros = async (req, res, next) => {
+  try {
+    // Debug: Log incoming request
+    // console.log('=== MACROS GENERATE REQUEST ===');
+    // console.log('Body:', req.body);
+    // console.log('Files:', req.files ? Object.keys(req.files) : 'No files');
+    
+    if (!req.files || !req.files.rawFile) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Raw file is required' 
+      });
+    }
+
+    const { brandId, sellerPortalId, date, skuId } = req.body;
+    
+    // SKU ID is NO LONGER REQUIRED - explicitly ignore it if sent
+    // SKUs are now fetched automatically based on brandId and sellerPortalId
+    if (skuId) {
+      // console.log('⚠️  Warning: skuId parameter received but will be ignored. SKUs are now fetched automatically.');
+    }
+    
+    // IMPORTANT: Do NOT validate skuId - it is not required anymore
+    // SKUs are fetched automatically from the database based on brandId and sellerPortalId
+
+    if (!brandId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Brand ID is required' 
+      });
+    }
+
+    if (!sellerPortalId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Seller portal ID is required' 
+      });
+    }
+
+    if (!date) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Date is required' 
+      });
+    }
+
+    // Validate that brand and seller portal exist
+    const brand = await Brands.findByPk(brandId);
+    if (!brand) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Brand not found' 
+      });
+    }
+
+    const sellerPortal = await SellerPortals.findByPk(sellerPortalId);
+    if (!sellerPortal) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Seller portal not found' 
+      });
+    }
+
+    const sellerPortalName = sellerPortal.name;
+
+    const rawFile = req.files.rawFile[0];
+
+    // Validate file buffers exist
+    if (!rawFile.buffer || rawFile.buffer.length === 0) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Raw file buffer is empty or corrupted' 
+      });
+    }
+
+    // Validate file types
+    const allowedMimeTypes = [
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'application/vnd.ms-excel',
+      'application/vnd.ms-excel.sheet.macroEnabled.12'
+    ];
+
+    if (!allowedMimeTypes.includes(rawFile.mimetype)) {
+      return res.status(400).json({ 
+        success: false, 
+        message: `Raw file must be an Excel file (.xlsx, .xls). Received: ${rawFile.mimetype}` 
+      });
+    }
+
+    // Validate file extensions
+    const rawFileExt = rawFile.originalname.split('.').pop().toLowerCase();
+    
+    if (!['xlsx', 'xls'].includes(rawFileExt)) {
+      return res.status(400).json({ 
+        success: false, 
+        message: `Raw file must have .xlsx or .xls extension. Received: .${rawFileExt}` 
+      });
+    }
+
+    // Get all SKUs for this brand and seller portal to build Source sheet
+    const allSKUs = await SKU.findAll({
+      where: {
+        brandId: brandId,
+        salesPortalId: sellerPortalId
+      },
+      order: [['salesPortalSku', 'ASC']]
+    });
+
+    if (allSKUs.length === 0) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'No SKUs found for this brand and seller portal' 
+      });
+    }
+
+    // Build Source sheet from SKU data
+    // Source sheet format: Column A = SKU (salesPortalSku), Column B = FG (tallyNewSku)
+    // Also need columns F-G for state mapping (if needed)
+    const sourceSheetData = allSKUs.map(sku => ({
+      'SKU': sku.salesPortalSku,
+      'FG': sku.tallyNewSku
+    }));
+
+    // Get state configs for this brand and sales portal BEFORE processing macros
+    const stateConfigs = await SalesPortalStateConfig.findAll({
+      where: {
+        brandId: brandId,
+        salesPortalId: sellerPortalId
+      }
+    });
+
+    // Create a map of state name -> {amazonPayLedger, invoiceNo}
+    // Use case-insensitive matching and trim for better matching
+    // If multiple configs exist for the same state, use the first one found
+    const stateConfigMap = new Map();
+    stateConfigs.forEach(config => {
+      if (config.states) {
+        const stateKey = config.states.trim().toLowerCase();
+        // Only set if not already in map (use first match)
+        if (!stateConfigMap.has(stateKey)) {
+          stateConfigMap.set(stateKey, {
+            amazonPayLedger: config.amazonPayLedger,
+            invoiceNo: config.invoiceNo
+          });
+        }
+      }
+    });
+
+    // console.log(`Loaded ${stateConfigMap.size} state config(s) for brand ${brand.name} and sales portal ${sellerPortalName}`);
+
+    // Create a temporary SKU workbook in memory
+    const skuWorkbook = XLSX.utils.book_new();
+    const skuSheet = XLSX.utils.json_to_sheet(sourceSheetData);
+    XLSX.utils.book_append_sheet(skuWorkbook, skuSheet, 'Source');
+    const skuFileBuffer = XLSX.write(skuWorkbook, { type: 'buffer', bookType: 'xlsx' });
+
+    // Process macros
+    let result;
+    let missingSKUs = [];
+    
+    try {
+      result = await processMacros(
+        rawFile.buffer,
+        skuFileBuffer,
+        brand.name,
+        date
+      );
+    } catch (error) {
+      // Check if error is about missing SKUs
+      if (error.message && (error.message.includes('SKU') && error.message.includes('missing')) || error.missingSKUs) {
+        // Extract missing SKUs from error
+        missingSKUs = error.missingSKUs || [];
+        
+        // Extract SKU IDs from error message if not in error.missingSKUs
+        if (missingSKUs.length === 0 && error.message.includes(':')) {
+          const skuListMatch = error.message.match(/:\s*([^,]+(?:,\s*[^,]+)*)/);
+          if (skuListMatch) {
+            missingSKUs = skuListMatch[1].split(',').map(s => s.trim()).filter(s => s);
+          }
+        }
+        
+        return res.status(400).json({
+          success: false,
+          message: error.message || 'Some SKUs are missing from the database',
+          missingSKUs: missingSKUs,
+          error: error.message
+        });
+      }
+      throw error;
+    }
+
+    // Update Excel workbook with state config data
+    // Find the worksheet and update cells for "Ship To State Tally Ledger" and "Final Invoice No."
+    // Try different possible sheet names
+    let ws = result.workbook.getWorksheet('Proccess 1');
+    if (!ws) {
+      ws = result.workbook.getWorksheet('Process 1') || result.workbook.getWorksheet('Process1');
+    }
+    if (!ws && result.workbook.worksheets.length > 0) {
+      ws = result.workbook.worksheets[0]; // Fallback to first worksheet
+    }
+    
+    if (ws) {
+      // Find column indices for the columns we need to update
+      let shipToStateCol = null;
+      let shipToStateTallyLedgerCol = null;
+      let finalInvoiceNoCol = null;
+
+      // Read header row to find column indices
+      const headerRow = ws.getRow(1);
+      headerRow.eachCell({ includeEmpty: false }, (cell, colNumber) => {
+        const headerName = String(cell.value || '').trim();
+        if (headerName === 'Ship To State') {
+          shipToStateCol = colNumber;
+        } else if (headerName === 'Ship To State Tally Ledger') {
+          shipToStateTallyLedgerCol = colNumber;
+        } else if (headerName === 'Final Invoice No.') {
+          finalInvoiceNoCol = colNumber;
+        }
+      });
+
+      // console.log(`Found columns - Ship To State: ${shipToStateCol}, Ship To State Tally Ledger: ${shipToStateTallyLedgerCol}, Final Invoice No.: ${finalInvoiceNoCol}`);
+
+      // Update data rows with state config values
+      if (shipToStateCol && shipToStateTallyLedgerCol && finalInvoiceNoCol) {
+        let updatedCount = 0;
+        const lastRow = ws.rowCount || 50000;
+        
+        for (let rowNum = 2; rowNum <= lastRow; rowNum++) {
+          const row = ws.getRow(rowNum);
+          const shipToStateCell = row.getCell(shipToStateCol);
+          const shipToStateValue = shipToStateCell.value;
+          
+          if (shipToStateValue) {
+            const stateKey = String(shipToStateValue).trim().toLowerCase();
+            const matchedConfig = stateConfigMap.get(stateKey);
+            
+            if (matchedConfig) {
+              // Update Ship To State Tally Ledger cell
+              if (matchedConfig.amazonPayLedger) {
+                const tallyLedgerCell = row.getCell(shipToStateTallyLedgerCol);
+                tallyLedgerCell.value = matchedConfig.amazonPayLedger;
+                // Remove formula if exists, set as value
+                tallyLedgerCell.formula = null;
+                updatedCount++;
+              }
+              
+              // Update Final Invoice No. cell
+              if (matchedConfig.invoiceNo) {
+                const invoiceNoCell = row.getCell(finalInvoiceNoCol);
+                invoiceNoCell.value = matchedConfig.invoiceNo;
+                // Remove formula if exists, set as value
+                invoiceNoCell.formula = null;
+                updatedCount++;
+              }
+            }
+          }
+        }
+        
+        // console.log(`Updated ${updatedCount} cells with state config data`);
+      } else {
+        // console.warn('Could not find required columns in worksheet');
+      }
+    }
+
+    // Update process1Json data with state config values for database storage
+    for (let i = 0; i < result.process1Json.length; i++) {
+      const row = result.process1Json[i];
+      const shipToState = row['Ship To State'];
+      
+      if (shipToState) {
+        const stateKey = String(shipToState).trim().toLowerCase();
+        const matchedConfig = stateConfigMap.get(stateKey);
+        
+        if (matchedConfig) {
+          // Update Ship To State Tally Ledger in JSON
+          if (matchedConfig.amazonPayLedger) {
+            row['Ship To State Tally Ledger'] = matchedConfig.amazonPayLedger;
+          }
+          
+          // Update Final Invoice No. in JSON
+          if (matchedConfig.invoiceNo) {
+            row['Final Invoice No.'] = matchedConfig.invoiceNo;
+          }
+        }
+      }
+    }
+
+    // Regenerate pivot with updated process1Json data (now includes state config values)
+    // This ensures "Final Invoice No." and "Ship To State Tally Ledger" are properly calculated in pivot
+    // console.log('Regenerating pivot with updated state config values...');
+    const updatedPivotData = generatePivot(result.process1Json, null); // sourceSheet not needed for recalculation
+    result.pivotData = updatedPivotData;
+    // console.log(`Regenerated ${updatedPivotData.length} pivot rows with state config values`);
+
+    // Recreate outputWorkbook with updated pivot data
+    const outputWorkbook = XLSX.utils.book_new();
+    const pivotSheet = XLSX.utils.json_to_sheet(updatedPivotData);
+    XLSX.utils.book_append_sheet(outputWorkbook, pivotSheet, 'Pivot 1');
+    
+    // Report1 is same as Pivot but values only
+    const report1Sheet = XLSX.utils.json_to_sheet(updatedPivotData);
+    XLSX.utils.book_append_sheet(outputWorkbook, report1Sheet, 'Report1');
+    result.outputWorkbook = outputWorkbook;
+
+    // ============================================================
+    // VALIDATION: Check if Process1 file is generated correctly
+    // ============================================================
+    let validation = validateProcess1File(
+      result.originalColumnMap,
+      result.filteredRowCount,
+      result.workbook,
+      result.process1Json
+    );
+
+    // If validation fails, attempt to fix and regenerate once
+    if (!validation.isValid) {
+      // console.log('Validation failed, attempting to fix and regenerate...');
+      // console.log('Validation errors:', validation.errors);
+      
+      // Attempt to fix: Ensure all columns from originalColumnMap are preserved
+      // This is already handled in macrosProcessor, but we'll regenerate to be sure
+      try {
+        // Regenerate with the same inputs
+        const regeneratedResult = await processMacros(
+          rawFile.buffer,
+          skuFileBuffer,
+          brand.name,
+          date
+        );
+
+        // Update state configs in regenerated result
+        let regWs = regeneratedResult.workbook.getWorksheet('Proccess 1');
+        if (!regWs) {
+          regWs = regeneratedResult.workbook.getWorksheet('Process 1') || regeneratedResult.workbook.getWorksheet('Process1');
+        }
+        if (!regWs && regeneratedResult.workbook.worksheets.length > 0) {
+          regWs = regeneratedResult.workbook.worksheets[0];
+        }
+        
+        if (regWs) {
+          let regShipToStateCol = null;
+          let regShipToStateTallyLedgerCol = null;
+          let regFinalInvoiceNoCol = null;
+
+          const regHeaderRow = regWs.getRow(1);
+          regHeaderRow.eachCell({ includeEmpty: false }, (cell, colNumber) => {
+            const headerName = String(cell.value || '').trim();
+            if (headerName === 'Ship To State') {
+              regShipToStateCol = colNumber;
+            } else if (headerName === 'Ship To State Tally Ledger') {
+              regShipToStateTallyLedgerCol = colNumber;
+            } else if (headerName === 'Final Invoice No.') {
+              regFinalInvoiceNoCol = colNumber;
+            }
+          });
+
+          if (regShipToStateCol && regShipToStateTallyLedgerCol && regFinalInvoiceNoCol) {
+            const regLastRow = regWs.rowCount || 50000;
+            for (let rowNum = 2; rowNum <= regLastRow; rowNum++) {
+              const regRow = regWs.getRow(rowNum);
+              const regShipToStateCell = regRow.getCell(regShipToStateCol);
+              const regShipToStateValue = regShipToStateCell.value;
+              
+              if (regShipToStateValue) {
+                const regStateKey = String(regShipToStateValue).trim().toLowerCase();
+                const regMatchedConfig = stateConfigMap.get(regStateKey);
+                
+                if (regMatchedConfig) {
+                  const regShipToStateTallyCell = regRow.getCell(regShipToStateTallyLedgerCol);
+                  const regFinalInvoiceNoCell = regRow.getCell(regFinalInvoiceNoCol);
+                  
+                  regShipToStateTallyCell.value = regMatchedConfig.amazonPayLedger || '';
+                  regFinalInvoiceNoCell.value = regMatchedConfig.invoiceNo || '';
+                }
+              }
+            }
+          }
+
+          // Update process1Json with state config values
+          for (let i = 0; i < regeneratedResult.process1Json.length; i++) {
+            const regRow = regeneratedResult.process1Json[i];
+            const regShipToStateValue = regRow['Ship To State'];
+            if (regShipToStateValue) {
+              const regStateKey = String(regShipToStateValue).trim().toLowerCase();
+              const regMatchedConfig = stateConfigMap.get(regStateKey);
+              if (regMatchedConfig) {
+                regRow['Ship To State Tally Ledger'] = regMatchedConfig.amazonPayLedger || '';
+                regRow['Final Invoice No.'] = regMatchedConfig.invoiceNo || '';
+              }
+            }
+          }
+        }
+
+        // Regenerate pivot with updated data
+        const regUpdatedPivotData = generatePivot(regeneratedResult.process1Json, null);
+        regeneratedResult.pivotData = regUpdatedPivotData;
+
+        // Recreate outputWorkbook
+        const regOutputWorkbook = XLSX.utils.book_new();
+        const regPivotSheet = XLSX.utils.json_to_sheet(regUpdatedPivotData);
+        XLSX.utils.book_append_sheet(regOutputWorkbook, regPivotSheet, 'Pivot 1');
+        const regReport1Sheet = XLSX.utils.json_to_sheet(regUpdatedPivotData);
+        XLSX.utils.book_append_sheet(regOutputWorkbook, regReport1Sheet, 'Report1');
+        regeneratedResult.outputWorkbook = regOutputWorkbook;
+
+        // Re-validate Process1
+        validation = validateProcess1File(
+          regeneratedResult.originalColumnMap,
+          regeneratedResult.filteredRowCount,
+          regeneratedResult.workbook,
+          regeneratedResult.process1Json
+        );
+
+        // Re-validate sum
+        const regSumValidation = validatePivotProcess1Sum(regeneratedResult.process1Json, regeneratedResult.pivotData);
+
+        if (validation.isValid && regSumValidation.isValid) {
+          // Use regenerated result
+          result = regeneratedResult;
+          // Update sumValidation to use regenerated values
+          sumValidation = regSumValidation;
+          // console.log('Validation passed after regeneration');
+        } else {
+          // console.log('Validation still failed after regeneration:', validation.errors);
+        }
+      } catch (regenerateError) {
+        // console.error('Error during regeneration:', regenerateError);
+        validation.errors.push(`Regeneration failed: ${regenerateError.message}`);
+      }
+    }
+
+    // ============================================================
+    // VALIDATION: Check if Pivot sum matches Process1 sum
+    // ============================================================
+    let sumValidation = validatePivotProcess1Sum(result.process1Json, result.pivotData);
+    
+    // Combine validation results
+    const overallIsValid = validation.isValid && sumValidation.isValid;
+    const allErrors = [...validation.errors, ...sumValidation.errors];
+    const allWarnings = [...validation.warnings, ...sumValidation.warnings];
+
+    // If validation still fails after regeneration, return error
+    if (!overallIsValid) {
+      return res.status(400).json({
+        success: false,
+        message: 'File validation failed. The generated files do not match the expected criteria.',
+        validation: {
+          isValid: false,
+          rowCountMatch: validation.rowCountMatch,
+          columnsMatch: validation.columnsMatch,
+          sumMatch: sumValidation.sumMatch,
+          originalRowCount: validation.originalRowCount,
+          generatedRowCount: validation.generatedRowCount,
+          process1Sum: sumValidation.process1Sum,
+          pivotSum: sumValidation.pivotSum,
+          sumDifference: sumValidation.difference,
+          missingColumns: validation.missingColumns,
+          errors: allErrors,
+          warnings: allWarnings
+        }
+      });
+    }
+
+    // Save output files
+    const outputFileName = `macros_${brand.name}_${sellerPortalName}_${date}_${uuidv4()}.xlsx`;
+    const outputFilePath = path.join(OUTPUT_DIR, outputFileName);
+
+    // Write ExcelJS workbook (with updated state config values) to file
+    await result.workbook.xlsx.writeFile(outputFilePath);
+
+    // Also create pivot/report file with updated pivot data
+    const pivotFileName = `pivot_${brand.name}_${sellerPortalName}_${date}_${uuidv4()}.xlsx`;
+    const pivotFilePath = path.join(OUTPUT_DIR, pivotFileName);
+    XLSX.writeFile(result.outputWorkbook, pivotFilePath);
+
+    // Save Process1 data to database
+    const process1Records = [];
+    for (const row of result.process1Json) {
+      const mappedRow = mapToProcess1Fields(row, brandId, sellerPortalId, date);
+      process1Records.push(mappedRow);
+    }
+    await Process1.bulkCreate(process1Records);
+
+    // Save Pivot data to database
+    const pivotRecords = [];
+    for (const row of result.pivotData) {
+      const mappedRow = mapToPivotFields(row, brandId, sellerPortalId, date);
+      pivotRecords.push(mappedRow);
+    }
+    await Pivot.bulkCreate(pivotRecords);
+
+    // Save file metadata to macros_files table
+    const macrosFile = await MacrosFiles.create({
+      brandId: brandId,
+      brandName: brand.name,
+      sellerPortalId: sellerPortalId,
+      sellerPortalName: sellerPortalName,
+      date: date,
+      process1_file_path: outputFilePath,
+      pivot_file_path: pivotFilePath,
+      process1_record_count: process1Records.length,
+      pivot_record_count: pivotRecords.length
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Macros generated successfully',
+      data: {
+        id: macrosFile.id,
+        brandId: brandId,
+        brandName: brand.name,
+        sellerPortalId: sellerPortalId,
+        sellerPortalName: sellerPortalName,
+        date: date,
+        process1RecordCount: process1Records.length,
+        pivotRecordCount: pivotRecords.length,
+        outputFile: outputFileName,
+        pivotFile: pivotFileName
+      },
+      validation: {
+        isValid: overallIsValid,
+        rowCountMatch: validation.rowCountMatch,
+        columnsMatch: validation.columnsMatch,
+        sumMatch: sumValidation.sumMatch,
+        originalRowCount: validation.originalRowCount,
+        generatedRowCount: validation.generatedRowCount,
+        originalColumnCount: validation.originalColumnCount,
+        generatedColumnCount: validation.generatedColumnCount,
+        process1Sum: sumValidation.process1Sum,
+        pivotSum: sumValidation.pivotSum,
+        sumDifference: sumValidation.difference,
+        missingColumns: validation.missingColumns || [],
+        extraColumns: validation.extraColumns || [],
+        errors: allErrors || [],
+        warnings: allWarnings || []
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Get all brands (from brands table)
+ * GET /api/macros/brands
+ */
+exports.getAllBrands = async (req, res, next) => {
+  try {
+    const brands = await Brands.findAll({
+      order: [['name', 'ASC']]
+    });
+    
+    res.json({
+      success: true,
+      data: brands.map(b => b.name)
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Get files by seller portal
+ * GET /api/macros/brand/:sellerPortalName
+ */
+exports.getFilesByBrand = async (req, res, next) => {
+  try {
+    const { sellerPortalName } = req.params;
+    
+    // Find seller portal by name
+    const sellerPortal = await SellerPortals.findOne({
+      where: { name: { [Op.iLike]: sellerPortalName } }
+    });
+
+    if (!sellerPortal) {
+      return res.json({
+        success: true,
+        count: 0,
+        data: []
+      });
+    }
+    
+    const files = await MacrosFiles.findAll({
+      where: { sellerPortalId: sellerPortal.id },
+      include: [
+        { model: Brands, as: 'brand', attributes: ['id', 'name'] },
+        { model: SellerPortals, as: 'sellerPortal', attributes: ['id', 'name'] }
+      ],
+      order: [['createdAt', 'DESC']]
+    });
+
+    const fileList = files.map(file => ({
+      id: file.id,
+      brandId: file.brandId,
+      brandName: file.brand ? file.brand.name : null,
+      sellerPortalId: file.sellerPortalId,
+      sellerPortalName: file.sellerPortalName || (file.sellerPortal ? file.sellerPortal.name : null),
+      date: file.date,
+      process1RecordCount: file.process1_record_count,
+      pivotRecordCount: file.pivot_record_count,
+      createdAt: file.createdAt
+    }));
+
+    res.json({
+      success: true,
+      count: fileList.length,
+      data: fileList
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Download Process1 file
+ * GET /api/macros/download/process1/:id
+ */
+exports.downloadProcess1 = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    // console.log('Download Process1 requested for ID:', id);
+    
+    const macrosFile = await MacrosFiles.findByPk(id);
+
+    if (!macrosFile) {
+      // console.log('Macros file not found for ID:', id);
+      return res.status(404).json({
+        success: false,
+        message: 'File not found'
+      });
+    }
+
+    if (!macrosFile.process1_file_path) {
+      // console.log('Process1 file path is null for ID:', id);
+      return res.status(404).json({
+        success: false,
+        message: 'Process1 file path not found'
+      });
+    }
+
+    const filePath = macrosFile.process1_file_path;
+    // console.log('Attempting to read file from path:', filePath);
+    
+    const fileExists = await fs.access(filePath).then(() => true).catch(() => false);
+
+    if (!fileExists) {
+      // console.log('File does not exist at path:', filePath);
+      return res.status(404).json({
+        success: false,
+        message: `File not found on server at path: ${filePath}`
+      });
+    }
+
+    // Read file and send as buffer
+    try {
+      const fileBuffer = await fs.readFile(filePath);
+      // console.log('File read successfully, size:', fileBuffer.length, 'bytes');
+      
+      const brand = await Brands.findByPk(macrosFile.brandId);
+      const brandName = brand ? brand.name : 'Unknown';
+      const fileName = `Process1_${brandName}_${macrosFile.sellerPortalName || 'Unknown'}_${macrosFile.date}.xlsx`;
+      
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+      res.setHeader('Content-Length', fileBuffer.length);
+      res.send(fileBuffer);
+      // console.log('File sent successfully');
+    } catch (readError) {
+      // console.error('Error reading Process1 file:', readError);
+      return res.status(500).json({
+        success: false,
+        message: `Failed to read file: ${readError.message}. File path: ${filePath}`
+      });
+    }
+  } catch (error) {
+    // console.error('Download Process1 error:', error);
+    next(error);
+  }
+};
+
+/**
+ * Download Pivot file
+ * GET /api/macros/download/pivot/:id
+ */
+exports.downloadPivot = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    // console.log('Download Pivot requested for ID:', id);
+    
+    const macrosFile = await MacrosFiles.findByPk(id);
+
+    if (!macrosFile) {
+      // console.log('Macros file not found for ID:', id);
+      return res.status(404).json({
+        success: false,
+        message: 'File not found'
+      });
+    }
+
+    if (!macrosFile.pivot_file_path) {
+      // console.log('Pivot file path is null for ID:', id);
+      return res.status(404).json({
+        success: false,
+        message: 'Pivot file path not found'
+      });
+    }
+
+    const filePath = macrosFile.pivot_file_path;
+    // console.log('Attempting to read file from path:', filePath);
+    
+    const fileExists = await fs.access(filePath).then(() => true).catch(() => false);
+
+    if (!fileExists) {
+      // console.log('File does not exist at path:', filePath);
+      return res.status(404).json({
+        success: false,
+        message: `File not found on server at path: ${filePath}`
+      });
+    }
+
+    // Read file and send as buffer
+    try {
+      const fileBuffer = await fs.readFile(filePath);
+      // console.log('File read successfully, size:', fileBuffer.length, 'bytes');
+      
+      const brand = await Brands.findByPk(macrosFile.brandId);
+      const brandName = brand ? brand.name : 'Unknown';
+      const fileName = `Pivot_${brandName}_${macrosFile.sellerPortalName || 'Unknown'}_${macrosFile.date}.xlsx`;
+      
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+      res.setHeader('Content-Length', fileBuffer.length);
+      res.send(fileBuffer);
+      // console.log('File sent successfully');
+    } catch (readError) {
+      // console.error('Error reading Pivot file:', readError);
+      return res.status(500).json({
+        success: false,
+        message: `Failed to read file: ${readError.message}. File path: ${filePath}`
+      });
+    }
+  } catch (error) {
+    // console.error('Download Pivot error:', error);
+    next(error);
+  }
+};
+
+/**
+ * Get Process1 data by brand and date
+ * GET /api/macros/process1/:brandId/:sellerPortalId/:date
+ */
+exports.getProcess1Data = async (req, res, next) => {
+  try {
+    const { brandId, sellerPortalId, date } = req.params;
+    
+    const data = await Process1.findAll({
+      where: { 
+        brandId: brandId,
+        sellerPortalId: sellerPortalId,
+        date: date
+      },
+      limit: 1000 // Limit to prevent huge responses
+    });
+
+    res.json({
+      success: true,
+      count: data.length,
+      data: data
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Get Pivot data by brand and date
+ * GET /api/macros/pivot/:brandId/:sellerPortalId/:date
+ */
+exports.getPivotData = async (req, res, next) => {
+  try {
+    const { brandId, sellerPortalId, date } = req.params;
+    
+    const data = await Pivot.findAll({
+      where: { 
+        brandId: brandId,
+        sellerPortalId: sellerPortalId,
+        date: date
+      }
+    });
+
+    res.json({
+      success: true,
+      count: data.length,
+      data: data
+    });
+  } catch (error) {
+    next(error);
+  }
+};

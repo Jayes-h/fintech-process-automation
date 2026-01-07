@@ -180,3 +180,10 @@ exports.deleteSellerPortal = async (req, res, next) => {
 };
 
 
+
+
+
+
+
+
+
