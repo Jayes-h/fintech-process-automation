@@ -118,3 +118,4 @@ FlipkartWorkingFile.belongsTo(SellerPortals, { foreignKey: 'sellerPortalId', as:
 module.exports = FlipkartWorkingFile;
 
 
+

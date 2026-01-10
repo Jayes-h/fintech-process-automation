@@ -178,6 +178,26 @@ exports.generateMacros = async (req, res, next) => {
       });
     }
 
+    // Parse withInventory FIRST - before any other operations
+    // FormData sends values as strings, so 'false' is the string 'false', not boolean false
+    const withInventoryRaw = req.body.withInventory;
+    let useInventory = true; // Default to true
+    
+    if (withInventoryRaw !== undefined && withInventoryRaw !== null) {
+      const withInventoryStr = String(withInventoryRaw).toLowerCase().trim();
+      // Explicitly check for false values - if it's 'false', '0', 'no', or empty string, set to false
+      if (withInventoryStr === 'false' || withInventoryStr === '0' || withInventoryStr === 'no') {
+        useInventory = false;
+      } else {
+        useInventory = true;
+      }
+    }
+    
+    console.log(`=== INVENTORY CHECK ===`);
+    console.log(`withInventory raw value: ${withInventoryRaw} (type: ${typeof withInventoryRaw})`);
+    console.log(`useInventory (will fetch SKUs): ${useInventory}`);
+    console.log(`Full req.body:`, JSON.stringify(req.body, null, 2));
+    
     const { brandId, sellerPortalId, date, skuId } = req.body;
     
     // SKU ID is NO LONGER REQUIRED - explicitly ignore it if sent
@@ -268,54 +288,79 @@ exports.generateMacros = async (req, res, next) => {
     }
 
     // Get all SKUs for this brand and seller portal to build Source sheet
-    const allSKUs = await SKU.findAll({
-      where: {
-        brandId: brandId,
-        salesPortalId: sellerPortalId
-      },
-      order: [['salesPortalSku', 'ASC']]
-    });
+    // COMPLETELY SKIP SKU operations if useInventory is false
+    let allSKUs = [];
+    let sourceSheetData = [];
+    let skuFileBuffer = null;
 
-    if (allSKUs.length === 0) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'No SKUs found for this brand and seller portal' 
-      });
-    }
-
-    // Build Source sheet from SKU data
-    // Source sheet format: Column A = SKU (salesPortalSku), Column B = FG (tallyNewSku)
-    // Also need columns F-G for state mapping (if needed)
-    const sourceSheetData = allSKUs.map(sku => ({
-      'SKU': sku.salesPortalSku,
-      'FG': sku.tallyNewSku
-    }));
-
-    // Create a temporary SKU workbook in memory
-    const skuWorkbook = XLSX.utils.book_new();
-    const skuSheet = XLSX.utils.json_to_sheet(sourceSheetData);
-    XLSX.utils.book_append_sheet(skuWorkbook, skuSheet, 'Source');
-    const skuFileBuffer = XLSX.write(skuWorkbook, { type: 'buffer', bookType: 'xlsx' });
-
-    // Get state config for this brand and seller portal
-    let stateConfigData = null;
-    try {
-      const stateConfig = await StateConfig.findOne({
+    if (!useInventory) {
+      // WITHOUT INVENTORY MODE: Skip all SKU-related operations
+      console.log('=== WITHOUT INVENTORY MODE: Skipping ALL SKU operations ===');
+      // Create an empty SKU workbook for compatibility (processor expects a buffer)
+      const skuWorkbook = XLSX.utils.book_new();
+      const skuSheet = XLSX.utils.json_to_sheet([]);
+      XLSX.utils.book_append_sheet(skuWorkbook, skuSheet, 'Source');
+      skuFileBuffer = XLSX.write(skuWorkbook, { type: 'buffer', bookType: 'xlsx' });
+      console.log('Created empty SKU workbook buffer for compatibility');
+      // Skip to state config section (which will also be skipped)
+    } else {
+      // WITH INVENTORY MODE: Fetch SKUs from database
+      console.log('=== WITH INVENTORY MODE: Fetching SKUs from database ===');
+      allSKUs = await SKU.findAll({
         where: {
           brandId: brandId,
-          sellerPortalId: sellerPortalId
-        }
+          salesPortalId: sellerPortalId
+        },
+        order: [['salesPortalSku', 'ASC']]
       });
-      
-      if (stateConfig && stateConfig.configData && stateConfig.configData.states) {
-        stateConfigData = stateConfig.configData.states;
-        console.log(`Found state config with ${stateConfigData.length} states`);
-      } else {
-        console.log('No state config found for this brand and seller portal');
+
+      console.log(`Found ${allSKUs.length} SKUs`);
+      if (allSKUs.length === 0) {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'No SKUs found for this brand and seller portal' 
+        });
       }
-    } catch (stateConfigError) {
-      console.warn('Error fetching state config:', stateConfigError.message);
-      // Continue without state config - it's optional
+
+      // Build Source sheet from SKU data
+      // Source sheet format: Column A = SKU (salesPortalSku), Column B = FG (tallyNewSku)
+      // Also need columns F-G for state mapping (if needed)
+      sourceSheetData = allSKUs.map(sku => ({
+        'SKU': sku.salesPortalSku,
+        'FG': sku.tallyNewSku
+      }));
+
+      // Create a temporary SKU workbook in memory
+      const skuWorkbook = XLSX.utils.book_new();
+      const skuSheet = XLSX.utils.json_to_sheet(sourceSheetData);
+      XLSX.utils.book_append_sheet(skuWorkbook, skuSheet, 'Source');
+      skuFileBuffer = XLSX.write(skuWorkbook, { type: 'buffer', bookType: 'xlsx' });
+      console.log('Created SKU workbook with data');
+    }
+
+    // Get state config for this brand and seller portal (only if withInventory is true)
+    let stateConfigData = null;
+    if (useInventory) {
+      try {
+        const stateConfig = await StateConfig.findOne({
+          where: {
+            brandId: brandId,
+            sellerPortalId: sellerPortalId
+          }
+        });
+        
+        if (stateConfig && stateConfig.configData && stateConfig.configData.states) {
+          stateConfigData = stateConfig.configData.states;
+          console.log(`Found state config with ${stateConfigData.length} states`);
+        } else {
+          console.log('No state config found for this brand and seller portal');
+        }
+      } catch (stateConfigError) {
+        console.warn('Error fetching state config:', stateConfigError.message);
+        // Continue without state config - it's optional
+      }
+    } else {
+      console.log('Skipping state config fetching (withInventory=false)');
     }
 
     // Process macros
@@ -329,7 +374,8 @@ exports.generateMacros = async (req, res, next) => {
         brand.name,
         date,
         sourceSheetData, // SKU data for source-sku sheet
-        stateConfigData  // State config data for source-state sheet
+        stateConfigData,  // State config data for source-state sheet
+        useInventory      // withInventory parameter
       );
     } catch (error) {
       // Check if error is about missing SKUs

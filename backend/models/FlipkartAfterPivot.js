@@ -56,3 +56,4 @@ FlipkartAfterPivot.belongsTo(SellerPortals, { foreignKey: 'sellerPortalId', as: 
 module.exports = FlipkartAfterPivot;
 
 
+

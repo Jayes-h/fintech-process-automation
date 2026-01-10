@@ -163,7 +163,7 @@ export const misDataApi = {
 };
 
 export const macrosApi = {
-  generateMacros: async (rawFile, brandId, sellerPortalId, date, fileType = null) => {
+  generateMacros: async (rawFile, brandId, sellerPortalId, date, fileType = null, withInventory = true) => {
     const formData = new FormData();
     formData.append('rawFile', rawFile);
     formData.append('brandId', brandId);
@@ -172,13 +172,15 @@ export const macrosApi = {
     if (fileType) {
       formData.append('fileType', fileType);
     }
+    // Add withInventory parameter (convert boolean to string for FormData)
+    formData.append('withInventory', withInventory.toString());
     
     // Determine endpoint based on fileType (B2B vs B2C)
     // B2B uses /macros-b2b/generate with different processing logic
     const endpoint = fileType === 'B2B' ? '/macros-b2b/generate' : '/macros/generate';
     
     // Debug: Log what we're sending
-    console.log('Generating macros with:', { brandId, sellerPortalId, date, fileType, endpoint, hasRawFile: !!rawFile });
+    console.log('Generating macros with:', { brandId, sellerPortalId, date, fileType, withInventory, endpoint, hasRawFile: !!rawFile });
     
     const response = await api.post(endpoint, formData, {
       headers: {

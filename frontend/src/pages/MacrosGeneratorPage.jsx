@@ -43,6 +43,7 @@ const MacrosGeneratorPage = () => {
   // Create file form state
   const [rawFile, setRawFile] = useState(null);
   const [fileType, setFileType] = useState('');
+  const [withInventory, setWithInventory] = useState(true); // Default to with inventory
   
   // Filter state for Amazon files
   const [monthFilter, setMonthFilter] = useState('');
@@ -257,73 +258,50 @@ const MacrosGeneratorPage = () => {
       setError(null);
       setSuccess(null);
 
-      // Check if SKUs exist
-      try {
-        const skuCheckResponse = await skuApi.getAllSKUs(brandId, portalId);
-        if (!skuCheckResponse.success || !skuCheckResponse.data || skuCheckResponse.data.length === 0) {
-          setError('No SKUs found for this brand and seller portal. Please add SKUs first.');
+      // Check if SKUs exist - ONLY if withInventory is true
+      // Skip SKU check completely when without inventory is selected
+      if (withInventory) {
+        try {
+          const skuCheckResponse = await skuApi.getAllSKUs(brandId, portalId);
+          if (!skuCheckResponse.success || !skuCheckResponse.data || skuCheckResponse.data.length === 0) {
+            setError('No SKUs found for this brand and seller portal. Please add SKUs first.');
+            setLoading(false);
+            return;
+          }
+        } catch (skuError) {
+          setError('Failed to check SKUs. Please verify your selection and try again.');
           setLoading(false);
           return;
         }
-      } catch (skuError) {
-        setError('Failed to check SKUs. Please verify your selection and try again.');
-        setLoading(false);
-        return;
+      } else {
+        console.log('Skipping SKU check (withInventory=false)');
       }
 
-      const response = await macrosApi.generateMacros(rawFile, brandId, portalId, date, fileType || null);
+      const response = await macrosApi.generateMacros(rawFile, brandId, portalId, date, fileType || null, withInventory);
       
       if (response.success) {
         setSuccess(`Macros generated successfully! Processed ${response.data.process1RecordCount} Amazon B2C Process1 records and ${response.data.pivotRecordCount} Amazon B2C Pivot records.`);
         setRawFile(null);
         setFileType('');
+        setWithInventory(true); // Reset to default
         setMonth(getDefaultMonth());
         setYear(getDefaultYear());
         setShowCreateFileModal(false);
         await loadPortalFiles(selectedPortal);
       }
     } catch (err) {
-      // Check if error is about missing SKUs
+      // Check if error is about missing SKUs - ONLY if withInventory is true
+      // Skip missing SKU handling when without inventory is selected
       const errorData = err.response?.data || {};
       const errorMessage = errorData.message || err.message || '';
       
-      // First check if missingSKUs array is directly in the response
-      if (errorData.missingSKUs && Array.isArray(errorData.missingSKUs) && errorData.missingSKUs.length > 0) {
-        const missingSKUList = errorData.missingSKUs;
-        setMissingSKUs(missingSKUList);
-        // Initialize missingSKUData with empty values for each missing SKU
-        const initialData = {};
-        missingSKUList.forEach(sku => {
-          initialData[sku] = '';
-        });
-        setMissingSKUData(initialData);
-        setShowMissingSKUModal(true);
-        setError(`Missing SKUs detected: ${missingSKUList.join(', ')}. Please add them to continue.`);
-      } 
-      // Check if error message contains "missing from the database" or "missing SKUs"
-      else if (errorMessage && (errorMessage.includes('missing from the database') || errorMessage.includes('missing SKUs') || errorMessage.includes('SKUs are missing'))) {
-        // Try to extract SKU IDs from error message
-        // Pattern: "Some SKUs are missing from the database: SKU1, SKU2, SKU3"
-        // or "Failed to process macros: Some SKUs are missing from the database: SKU1, SKU2, SKU3"
-        let missingSKUList = [];
-        
-        // Try multiple patterns to extract SKUs
-        const patterns = [
-          /:\s*([^,]+(?:,\s*[^,]+)*)$/,  // Match everything after last colon
-          /missing.*?:\s*([^,]+(?:,\s*[^,]+)*)/i,  // Match after "missing" keyword
-          /SKUs?\s+(?:are\s+)?missing[^:]*:\s*([^,]+(?:,\s*[^,]+)*)/i  // More specific pattern
-        ];
-        
-        for (const pattern of patterns) {
-          const match = errorMessage.match(pattern);
-          if (match && match[1]) {
-            missingSKUList = match[1].split(',').map(s => s.trim()).filter(s => s && s.length > 0);
-            if (missingSKUList.length > 0) break;
-          }
-        }
-        
-        if (missingSKUList.length > 0) {
+      // Only handle missing SKU errors if withInventory is true
+      if (withInventory) {
+        // First check if missingSKUs array is directly in the response
+        if (errorData.missingSKUs && Array.isArray(errorData.missingSKUs) && errorData.missingSKUs.length > 0) {
+          const missingSKUList = errorData.missingSKUs;
           setMissingSKUs(missingSKUList);
+          // Initialize missingSKUData with empty values for each missing SKU
           const initialData = {};
           missingSKUList.forEach(sku => {
             initialData[sku] = '';
@@ -331,10 +309,46 @@ const MacrosGeneratorPage = () => {
           setMissingSKUData(initialData);
           setShowMissingSKUModal(true);
           setError(`Missing SKUs detected: ${missingSKUList.join(', ')}. Please add them to continue.`);
+        } 
+        // Check if error message contains "missing from the database" or "missing SKUs"
+        else if (errorMessage && (errorMessage.includes('missing from the database') || errorMessage.includes('missing SKUs') || errorMessage.includes('SKUs are missing'))) {
+          // Try to extract SKU IDs from error message
+          // Pattern: "Some SKUs are missing from the database: SKU1, SKU2, SKU3"
+          // or "Failed to process macros: Some SKUs are missing from the database: SKU1, SKU2, SKU3"
+          let missingSKUList = [];
+          
+          // Try multiple patterns to extract SKUs
+          const patterns = [
+            /:\s*([^,]+(?:,\s*[^,]+)*)$/,  // Match everything after last colon
+            /missing.*?:\s*([^,]+(?:,\s*[^,]+)*)/i,  // Match after "missing" keyword
+            /SKUs?\s+(?:are\s+)?missing[^:]*:\s*([^,]+(?:,\s*[^,]+)*)/i  // More specific pattern
+          ];
+          
+          for (const pattern of patterns) {
+            const match = errorMessage.match(pattern);
+            if (match && match[1]) {
+              missingSKUList = match[1].split(',').map(s => s.trim()).filter(s => s && s.length > 0);
+              if (missingSKUList.length > 0) break;
+            }
+          }
+          
+          if (missingSKUList.length > 0) {
+            setMissingSKUs(missingSKUList);
+            const initialData = {};
+            missingSKUList.forEach(sku => {
+              initialData[sku] = '';
+            });
+            setMissingSKUData(initialData);
+            setShowMissingSKUModal(true);
+            setError(`Missing SKUs detected: ${missingSKUList.join(', ')}. Please add them to continue.`);
+          } else {
+            setError(errorMessage || 'Failed to generate macros');
+          }
         } else {
           setError(errorMessage || 'Failed to generate macros');
         }
       } else {
+        // Without inventory mode - just show the error without SKU handling
         setError(errorMessage || 'Failed to generate macros');
       }
     } finally {
@@ -407,12 +421,13 @@ const MacrosGeneratorPage = () => {
             setError(null);
             setSuccess(null);
             
-            const response = await macrosApi.generateMacros(rawFile, brandId, portalId, date, fileType || null);
+            const response = await macrosApi.generateMacros(rawFile, brandId, portalId, date, fileType || null, withInventory);
             
             if (response.success) {
               setSuccess(`Macros generated successfully! Processed ${response.data.process1RecordCount} Amazon B2C Process1 records and ${response.data.pivotRecordCount} Amazon B2C Pivot records.`);
               setRawFile(null);
               setFileType('');
+              setWithInventory(true); // Reset to default
               setMonth(getDefaultMonth());
               setYear(getDefaultYear());
               setShowCreateFileModal(false);
@@ -1503,25 +1518,59 @@ const MacrosGeneratorPage = () => {
               </Col>
             </Row>
             {isAmazonPortal() && (
-              <Row>
-                <Col md={12}>
-                  <Form.Group className="mb-3">
-                    <Form.Label>File Type <span className="text-danger">*</span></Form.Label>
-                    <Form.Select
-                      value={fileType}
-                      onChange={(e) => setFileType(e.target.value)}
-                      required
-                    >
-                      <option value="">Select File Type</option>
-                      <option value="B2C">B2C</option>
-                      <option value="B2B">B2B</option>
-                    </Form.Select>
-                    <Form.Text className="text-muted">
-                      Select the type of file: B2C (Business to Consumer) or B2B (Business to Business)
-                    </Form.Text>
-                  </Form.Group>
-                </Col>
-              </Row>
+              <>
+                <Row>
+                  <Col md={12}>
+                    <Form.Group className="mb-3">
+                      <Form.Label>File Type <span className="text-danger">*</span></Form.Label>
+                      <Form.Select
+                        value={fileType}
+                        onChange={(e) => setFileType(e.target.value)}
+                        required
+                      >
+                        <option value="">Select File Type</option>
+                        <option value="B2C">B2C</option>
+                        <option value="B2B">B2B</option>
+                      </Form.Select>
+                      <Form.Text className="text-muted">
+                        Select the type of file: B2C (Business to Consumer) or B2B (Business to Business)
+                      </Form.Text>
+                    </Form.Group>
+                  </Col>
+                </Row>
+                <Row>
+                  <Col md={12}>
+                    <Form.Group className="mb-3">
+                      <Form.Label>Inventory Option</Form.Label>
+                      <div>
+                        <Form.Check
+                          inline
+                          type="radio"
+                          id="with-inventory"
+                          name="inventoryOption"
+                          label="With Inventory"
+                          checked={withInventory === true}
+                          onChange={() => setWithInventory(true)}
+                        />
+                        <Form.Check
+                          inline
+                          type="radio"
+                          id="without-inventory"
+                          name="inventoryOption"
+                          label="Without Inventory"
+                          checked={withInventory === false}
+                          onChange={() => setWithInventory(false)}
+                        />
+                      </div>
+                      <Form.Text className="text-muted">
+                        {withInventory 
+                          ? 'With Inventory: Includes SKU, FG, Final Invoice No., and Ship To State Tally Ledger columns.' 
+                          : 'Without Inventory: Skips SKU/FG lookup and state config columns (for re-generating files without inventory data).'}
+                      </Form.Text>
+                    </Form.Group>
+                  </Col>
+                </Row>
+              </>
             )}
             <Form.Group className="mb-3">
               <Form.Label>Raw File (Excel)</Form.Label>

@@ -618,8 +618,11 @@ function getColumnLetter(colIndex) {
  * STEP 1: Insert Columns & Rename Headers
  * Using manual cell shifting approach for reliable column insertion
  * Insert columns in reverse order (right to left) to avoid index shifting
+ * @param {Workbook} workbook - ExcelJS workbook
+ * @param {string} sheetName - Name of the sheet to modify
+ * @param {boolean} withInventory - If false, skip FG, Ship To State Tally Ledger, Final Invoice No. columns
  */
-function insertColumnsAndRenameHeaders(workbook, sheetName) {
+function insertColumnsAndRenameHeaders(workbook, sheetName, withInventory = true) {
   const ws = workbook.getWorksheet(sheetName);
   if (!ws) {
     throw new Error(`Sheet '${sheetName}' not found`);
@@ -708,24 +711,32 @@ function insertColumnsAndRenameHeaders(workbook, sheetName) {
     console.warn('Could not insert columns after Compensatory Cess Tax:', e.message);
   }
 
-  // 3. Insert 2 columns after "Ship To State"
-  try {
-    const shipToStateCol = findColumnIndex(ws, 'Ship To State');
-    // Insert in reverse order
-    insertColumnAt(shipToStateCol + 1, 'Final Invoice No.');
-    insertColumnAt(shipToStateCol + 1, 'Ship To State Tally Ledger');
-    console.log(`Inserted 2 columns after "Ship To State"`);
-  } catch (e) {
-    console.warn('Could not insert columns after Ship To State:', e.message);
+  // 3. Insert 2 columns after "Ship To State" (only if withInventory is true)
+  if (withInventory) {
+    try {
+      const shipToStateCol = findColumnIndex(ws, 'Ship To State');
+      // Insert in reverse order
+      insertColumnAt(shipToStateCol + 1, 'Final Invoice No.');
+      insertColumnAt(shipToStateCol + 1, 'Ship To State Tally Ledger');
+      console.log(`Inserted 2 columns after "Ship To State"`);
+    } catch (e) {
+      console.warn('Could not insert columns after Ship To State:', e.message);
+    }
+  } else {
+    console.log('Skipping Ship To State Tally Ledger and Final Invoice No. columns (withInventory=false)');
   }
 
-  // 4. Insert column after "Sku" last (leftmost)
-  try {
-    const skuCol = findColumnIndex(ws, 'Sku');
-    insertColumnAt(skuCol + 1, 'FG');
-    console.log(`Inserted column "FG" after "Sku"`);
-  } catch (e) {
-    console.warn('Could not insert column after Sku:', e.message);
+  // 4. Insert column after "Sku" last (leftmost) (only if withInventory is true)
+  if (withInventory) {
+    try {
+      const skuCol = findColumnIndex(ws, 'Sku');
+      insertColumnAt(skuCol + 1, 'FG');
+      console.log(`Inserted column "FG" after "Sku"`);
+    } catch (e) {
+      console.warn('Could not insert column after Sku:', e.message);
+    }
+  } else {
+    console.log('Skipping FG column (withInventory=false)');
   }
 
   return ws;
@@ -735,8 +746,12 @@ function insertColumnsAndRenameHeaders(workbook, sheetName) {
  * STEP 2: Apply Formulas to Ranges (B2B Version)
  * B2B uses IF formulas for Ship To State Tally Ledger and Final Invoice No.
  * comparing Bill From State with Ship To State
+ * @param {Worksheet} ws - ExcelJS worksheet
+ * @param {string} sourceSheetName - Name of the source sheet
+ * @param {string} date - Date string
+ * @param {boolean} withInventory - If false, skip FG, Ship To State Tally Ledger, Final Invoice No. formulas
  */
-function applyFormulas(ws, sourceSheetName = 'Source', date = '') {
+function applyFormulas(ws, sourceSheetName = 'Source', date = '', withInventory = true) {
   const lastRow = Math.min(ws.rowCount || 50000, 50000);
 
   // Helper to safely find column and get letter
@@ -787,14 +802,16 @@ function applyFormulas(ws, sourceSheetName = 'Source', date = '') {
   for (let row = 2; row <= lastRow; row++) {
     try {
       // Column FG (O): =VLOOKUP(Sku,'source-sku'!$A$2:$B$229,2,FALSE)
-      if (colSku && colFG) {
+      // Only apply if withInventory is true
+      if (withInventory && colSku && colFG) {
         ws.getCell(`${colFG}${row}`).value = {
           formula: `VLOOKUP(${colSku}${row},'source-sku'!$A:$B,2,FALSE)`
         };
       }
 
       // B2B Logic - Ship To State Tally Ledger: IF(Bill From State = Ship To State, "Amazon B2B Intra-State", "Amazon B2B Inter-State")
-      if (colBillFromState && colShipToState && colShipToStateTally) {
+      // Only apply if withInventory is true
+      if (withInventory && colBillFromState && colShipToState && colShipToStateTally) {
         console.log("Bill From State: ", ws.getCell(`${colBillFromState}${row}`).value, "Ship To State: ", ws.getCell(`${colShipToState}${row}`).value);
         ws.getCell(`${colShipToStateTally}${row}`).value = {
           formula: `IF(${colBillFromState}${row}=${colShipToState}${row},"Amazon B2B Intra-State","Amazon B2B Inter-State")`
@@ -803,7 +820,8 @@ function applyFormulas(ws, sourceSheetName = 'Source', date = '') {
       }
 
       // B2B Logic - Final Invoice No.: IF(Bill From State = Ship To State, "AMZ-INTRA-{month}", "AMZ-INTER-{month}")
-      if (colBillFromState && colShipToState && colFinalInvoiceNo) {
+      // Only apply if withInventory is true
+      if (withInventory && colBillFromState && colShipToState && colFinalInvoiceNo) {
         ws.getCell(`${colFinalInvoiceNo}${row}`).value = {
           formula: `IF(${colBillFromState}${row}=${colShipToState}${row},"AMZ-INTRA-${monthNum}","AMZ-INTER-${monthNum}")`
         };
@@ -1032,8 +1050,12 @@ function buildStateToInvoiceMap(sourceSheet) {
  * 
  * 6. Final Invoice No. calculation: For each Seller Gstin, find the Ship To State value,
  *    then look up the invoice number from Source sheet based on that state.
+ * 
+ * @param {Array} process1Data - Array of row objects from Process 1
+ * @param {Worksheet} sourceSheet - ExcelJS worksheet for Source sheet (optional)
+ * @param {boolean} withInventory - If false, group only by Seller Gstin (no FG, Invoice, Ledger)
  */
-function generatePivot(process1Data, sourceSheet = null) {
+function generatePivot(process1Data, sourceSheet = null, withInventory = true) {
   const pivot = {};
 
   /**
@@ -1068,7 +1090,7 @@ function generatePivot(process1Data, sourceSheet = null) {
   };
 
   /**
-   * Create stable, collision-free key from 4 grouping fields.
+   * Create stable, collision-free key from grouping fields.
    * Using JSON.stringify ensures:
    * - No collisions from special characters (like '|' in values)
    * - Consistent ordering
@@ -1076,14 +1098,23 @@ function generatePivot(process1Data, sourceSheet = null) {
    * 
    * NOTE: Final Invoice No. (column AB) and Ship To State Tally Ledger (column AA) 
    * are already calculated columns in Process 1 data, so we use them directly.
+   * 
+   * When withInventory=false, only group by Seller Gstin
    */
   const createGroupKey = (row) => {
-    return JSON.stringify({
-      gstin: normalizeString(row['Seller Gstin']),
-      invoice: normalizeString(row['Final Invoice No.']), // Column AB - use directly from Process 1
-      ledger: normalizeString(row['Ship To State Tally Ledger']), // Column AA - use directly from Process 1
-      fg: normalizeString(row['FG'])
-    });
+    if (withInventory) {
+      return JSON.stringify({
+        gstin: normalizeString(row['Seller Gstin']),
+        invoice: normalizeString(row['Final Invoice No.']), // Column AB - use directly from Process 1
+        ledger: normalizeString(row['Ship To State Tally Ledger']), // Column AA - use directly from Process 1
+        fg: normalizeString(row['FG'])
+      });
+    } else {
+      // Without inventory, only group by Seller Gstin
+      return JSON.stringify({
+        gstin: normalizeString(row['Seller Gstin'])
+      });
+    }
   };
 
   // Validate that required columns exist in process1Data
@@ -1132,25 +1163,45 @@ function generatePivot(process1Data, sourceSheet = null) {
     // Initialize pivot row if it doesn't exist
     // Use values directly from Process 1 data (columns AA and AB are already calculated)
     if (!pivot[groupKey]) {
-      pivot[groupKey] = {
-        'Seller Gstin': gstin,
-        'Final Invoice No.': normalizeString(row['Final Invoice No.']), // Column AB - from Process 1
-        'Ship To State Tally Ledger': normalizeString(row['Ship To State Tally Ledger']), // Column AA - from Process 1
-        'FG': normalizeString(row['FG']),
-        'Sum of Quantity': 0,
-        'Sum of Final Taxable Sales Value': 0,
-        'Sum of Final CGST Tax': 0,
-        'Sum of Final SGST Tax': 0,
-        'Sum of Final IGST Tax': 0,
-        'Sum of Final Taxable Shipping Value': 0,
-        'Sum of Final Shipping CGST Tax': 0,
-        'Sum of Final Shipping SGST Tax': 0,
-        'Sum of Final Shipping IGST Tax': 0,
-        'Sum of Tcs Cgst Amount': 0,
-        'Sum of Tcs Sgst Amount': 0,
-        'Sum of Tcs Igst Amount': 0,
-        'Sum of Final Amount Receivable': 0
-      };
+      if (withInventory) {
+        pivot[groupKey] = {
+          'Seller Gstin': gstin,
+          'Final Invoice No.': normalizeString(row['Final Invoice No.']), // Column AB - from Process 1
+          'Ship To State Tally Ledger': normalizeString(row['Ship To State Tally Ledger']), // Column AA - from Process 1
+          'FG': normalizeString(row['FG']),
+          'Sum of Quantity': 0,
+          'Sum of Final Taxable Sales Value': 0,
+          'Sum of Final CGST Tax': 0,
+          'Sum of Final SGST Tax': 0,
+          'Sum of Final IGST Tax': 0,
+          'Sum of Final Taxable Shipping Value': 0,
+          'Sum of Final Shipping CGST Tax': 0,
+          'Sum of Final Shipping SGST Tax': 0,
+          'Sum of Final Shipping IGST Tax': 0,
+          'Sum of Tcs Cgst Amount': 0,
+          'Sum of Tcs Sgst Amount': 0,
+          'Sum of Tcs Igst Amount': 0,
+          'Sum of Final Amount Receivable': 0
+        };
+      } else {
+        // Without inventory, only include Seller Gstin as grouping column
+        pivot[groupKey] = {
+          'Seller Gstin': gstin,
+          'Sum of Quantity': 0,
+          'Sum of Final Taxable Sales Value': 0,
+          'Sum of Final CGST Tax': 0,
+          'Sum of Final SGST Tax': 0,
+          'Sum of Final IGST Tax': 0,
+          'Sum of Final Taxable Shipping Value': 0,
+          'Sum of Final Shipping CGST Tax': 0,
+          'Sum of Final Shipping SGST Tax': 0,
+          'Sum of Final Shipping IGST Tax': 0,
+          'Sum of Tcs Cgst Amount': 0,
+          'Sum of Tcs Sgst Amount': 0,
+          'Sum of Tcs Igst Amount': 0,
+          'Sum of Final Amount Receivable': 0
+        };
+      }
     }
 
     // Sum all data fields using safe numeric conversion
@@ -1177,13 +1228,29 @@ function generatePivot(process1Data, sourceSheet = null) {
   const pivotRows = Object.values(pivot);
 
   // Ensure all pivot rows have the correct column order and all required columns
-  // Column order as per user requirement:
-  // Seller Gstin, Final Invoice No., Ship To State Tally Ledger, FG, then all Sum columns
-  const orderedColumns = [
+  // Column order depends on withInventory:
+  // With inventory: Seller Gstin, Final Invoice No., Ship To State Tally Ledger, FG, then all Sum columns
+  // Without inventory: Seller Gstin, then all Sum columns
+  const orderedColumns = withInventory ? [
     'Seller Gstin',
     'Final Invoice No.',
     'Ship To State Tally Ledger',
     'FG',
+    'Sum of Quantity',
+    'Sum of Final Taxable Sales Value',
+    'Sum of Final CGST Tax',
+    'Sum of Final SGST Tax',
+    'Sum of Final IGST Tax',
+    'Sum of Final Taxable Shipping Value',
+    'Sum of Final Shipping CGST Tax',
+    'Sum of Final Shipping SGST Tax',
+    'Sum of Final Shipping IGST Tax',
+    'Sum of Tcs Cgst Amount',
+    'Sum of Tcs Sgst Amount',
+    'Sum of Tcs Igst Amount',
+    'Sum of Final Amount Receivable'
+  ] : [
+    'Seller Gstin',
     'Sum of Quantity',
     'Sum of Final Taxable Sales Value',
     'Sum of Final CGST Tax',
@@ -1211,17 +1278,21 @@ function generatePivot(process1Data, sourceSheet = null) {
   // Sort to match Excel PivotTable default sorting (by row fields in order)
   // This ensures consistent output matching VBA behavior
   orderedPivotRows.sort((a, b) => {
-    // Sort by: Seller Gstin, then Final Invoice No., then Ship To State Tally Ledger, then FG
+    // Sort by: Seller Gstin first
     if (a['Seller Gstin'] !== b['Seller Gstin']) {
       return a['Seller Gstin'].localeCompare(b['Seller Gstin']);
     }
-    if (a['Final Invoice No.'] !== b['Final Invoice No.']) {
-      return a['Final Invoice No.'].localeCompare(b['Final Invoice No.']);
+    // If withInventory, also sort by Final Invoice No., Ship To State Tally Ledger, FG
+    if (withInventory) {
+      if (a['Final Invoice No.'] !== b['Final Invoice No.']) {
+        return a['Final Invoice No.'].localeCompare(b['Final Invoice No.']);
+      }
+      if (a['Ship To State Tally Ledger'] !== b['Ship To State Tally Ledger']) {
+        return a['Ship To State Tally Ledger'].localeCompare(b['Ship To State Tally Ledger']);
+      }
+      return a['FG'].localeCompare(b['FG']);
     }
-    if (a['Ship To State Tally Ledger'] !== b['Ship To State Tally Ledger']) {
-      return a['Ship To State Tally Ledger'].localeCompare(b['Ship To State Tally Ledger']);
-    }
-    return a['FG'].localeCompare(b['FG']);
+    return 0;
   });
 
   console.log(`Generated ${orderedPivotRows.length} pivot rows from ${process1Data.length} Process 1 rows`);
@@ -1237,8 +1308,15 @@ function generatePivot(process1Data, sourceSheet = null) {
  * This is a separate implementation from B2C with different logic for:
  * - Ship To State Tally Ledger: Compares Bill From State with Ship To State
  * - Final Invoice No.: Uses AMZ-INTRA-{month} or AMZ-INTER-{month} based on state comparison
+ * @param {Buffer} rawFileBuffer - Raw file buffer
+ * @param {Buffer} skuFileBuffer - SKU file buffer
+ * @param {string} brandName - Brand name
+ * @param {string} date - Date string
+ * @param {Array} skuData - SKU data array (optional)
+ * @param {Array} stateConfigData - State config data array (optional, not used in B2B)
+ * @param {boolean} withInventory - If false, skip FG, Ship To State Tally Ledger, Final Invoice No. columns (default: true)
  */
-async function processMacrosB2B(rawFileBuffer, skuFileBuffer, brandName, date, skuData = null, stateConfigData = null) {
+async function processMacrosB2B(rawFileBuffer, skuFileBuffer, brandName, date, skuData = null, stateConfigData = null, withInventory = true) {
   try {
     // Validate file buffers
     if (!rawFileBuffer || rawFileBuffer.length === 0) {
@@ -1389,13 +1467,14 @@ async function processMacrosB2B(rawFileBuffer, skuFileBuffer, brandName, date, s
     // STEP 1: INSERT REQUIRED COLUMNS
     // ============================================================
     console.log('Step 1: Insert required columns');
-    insertColumnsAndRenameHeaders(workbook, 'amazon-b2c-process1');
+    console.log(`withInventory: ${withInventory}`);
+    insertColumnsAndRenameHeaders(workbook, 'amazon-b2c-process1', withInventory);
 
     // ============================================================
     // STEP 2: APPLY FORMULAS
     // ============================================================
     console.log('Step 2: Apply formulas');
-    applyFormulas(ws, 'Source', date);
+    applyFormulas(ws, 'Source', date, withInventory);
 
     // ============================================================
     // STEP 3: EVALUATE FORMULAS & CONVERT TO JSON
@@ -1416,8 +1495,9 @@ async function processMacrosB2B(rawFileBuffer, skuFileBuffer, brandName, date, s
 
     // Create lookup maps from skuData and stateConfigData for manual VLOOKUP calculation
     // These replace the Excel VLOOKUP formulas since the source sheets don't exist in the workbook yet
+    // Only needed if withInventory is true
     const skuLookupMap = {}; // SKU -> FG
-    if (skuData && Array.isArray(skuData)) {
+    if (withInventory && skuData && Array.isArray(skuData)) {
       for (const item of skuData) {
         const sku = String(item.SKU || item.sku || '').trim();
         const fg = item.FG || item.fg || '';
@@ -1426,6 +1506,8 @@ async function processMacrosB2B(rawFileBuffer, skuFileBuffer, brandName, date, s
         }
       }
       console.log(`✓ Created SKU lookup map with ${Object.keys(skuLookupMap).length} entries`);
+    } else if (!withInventory) {
+      console.log('✓ Skipping SKU lookup map (withInventory=false)');
     }
     
     // B2B does not use stateLookupMap - uses Bill From State vs Ship To State comparison instead
@@ -1502,7 +1584,8 @@ async function processMacrosB2B(rawFileBuffer, skuFileBuffer, brandName, date, s
           }
           
           // Check if this is FG column and has empty value (missing SKU)
-          if (headerName === 'FG' && (cellValue === '' || cellValue === null || cellValue === undefined)) {
+          // Only check if withInventory is true
+          if (withInventory && headerName === 'FG' && (cellValue === '' || cellValue === null || cellValue === undefined)) {
             // Track the missing SKU
             if (skuValue) {
               missingSKUsSet.add(skuValue);
@@ -1522,24 +1605,26 @@ async function processMacrosB2B(rawFileBuffer, skuFileBuffer, brandName, date, s
         }
       });
 
-      // Manually calculate values for B2B
-      // FG = VLOOKUP(SKU, source-sku, 2, FALSE)
-      if (skuValue && skuLookupMap[skuValue]) {
-        rowData['FG'] = skuLookupMap[skuValue];
-      }
-      
-      // B2B Logic: Compare Bill From State (col 18) with Ship To State (col 25)
-      // Ship To State Tally Ledger: If same state → "Amazon B2B Intra-State", else → "Amazon B2B Inter-State"
-      // Final Invoice No.: If same state → "AMZ-INTRA-{month}", else → "AMZ-INTER-{month}"
-      if (billFromStateValue && shipToStateValue) {
-        if (billFromStateValue === shipToStateValue) {
-          // Same state = Intra-State
-          rowData['Ship To State Tally Ledger'] = 'Amazon B2B Intra-State';
-          rowData['Final Invoice No.'] = `AMZ-INTRA-${monthNum}`;
-        } else {
-          // Different states = Inter-State
-          rowData['Ship To State Tally Ledger'] = 'Amazon B2B Inter-State';
-          rowData['Final Invoice No.'] = `AMZ-INTER-${monthNum}`;
+      // Manually calculate values for B2B (only if withInventory is true)
+      if (withInventory) {
+        // FG = VLOOKUP(SKU, source-sku, 2, FALSE)
+        if (skuValue && skuLookupMap[skuValue]) {
+          rowData['FG'] = skuLookupMap[skuValue];
+        }
+        
+        // B2B Logic: Compare Bill From State (col 18) with Ship To State (col 25)
+        // Ship To State Tally Ledger: If same state → "Amazon B2B Intra-State", else → "Amazon B2B Inter-State"
+        // Final Invoice No.: If same state → "AMZ-INTRA-{month}", else → "AMZ-INTER-{month}"
+        if (billFromStateValue && shipToStateValue) {
+          if (billFromStateValue === shipToStateValue) {
+            // Same state = Intra-State
+            rowData['Ship To State Tally Ledger'] = 'Amazon B2B Intra-State';
+            rowData['Final Invoice No.'] = `AMZ-INTRA-${monthNum}`;
+          } else {
+            // Different states = Inter-State
+            rowData['Ship To State Tally Ledger'] = 'Amazon B2B Inter-State';
+            rowData['Final Invoice No.'] = `AMZ-INTER-${monthNum}`;
+          }
         }
       }
 
@@ -1549,8 +1634,8 @@ async function processMacrosB2B(rawFileBuffer, skuFileBuffer, brandName, date, s
       }
     }
 
-    // Check if we have missing SKUs
-    if (missingSKUsSet.size > 0 || evaluator.missingSKUs.size > 0) {
+    // Check if we have missing SKUs (only if withInventory is true)
+    if (withInventory && (missingSKUsSet.size > 0 || evaluator.missingSKUs.size > 0)) {
       const allMissingSKUs = Array.from(new Set([...missingSKUsSet, ...evaluator.missingSKUs]));
       const error = new Error(`Some SKUs are missing from the database: ${allMissingSKUs.join(', ')}`);
       error.missingSKUs = allMissingSKUs;
@@ -1568,7 +1653,7 @@ async function processMacrosB2B(rawFileBuffer, skuFileBuffer, brandName, date, s
     // For proper operation, formulas should be evaluated first (by Excel or formula engine)
     // The pivot function safely handles any remaining strings, nulls, or invalid values
     // Pass source sheet to pivot function for Final Invoice No. lookup
-    const pivotData = generatePivot(process1Json, mainSourceSheet);
+    const pivotData = generatePivot(process1Json, mainSourceSheet, withInventory);
     console.log(`Generated ${pivotData.length} pivot rows`);
 
     // ============================================================
@@ -1576,38 +1661,42 @@ async function processMacrosB2B(rawFileBuffer, skuFileBuffer, brandName, date, s
     // ============================================================
     console.log('Step 5: Create Pivot 1 & Report1 sheets');
     const outputWorkbook = XLSX.utils.book_new();
-    // Manually calculate VLOOKUP values for pivot sheet columns B, C, D
+    
+    // Manually calculate VLOOKUP values for pivot sheet columns B, C, D (only if withInventory)
     // This implements the VLOOKUP logic in JavaScript for reliable calculation
     // B (Final Invoice No.) = VLOOKUP(Seller Gstin, process1, 'Final Invoice No.', exact match)
     // C (Ship To State Tally Ledger) = VLOOKUP(Seller Gstin, process1, 'Ship To State Tally Ledger', exact match)
     // D (FG) = VLOOKUP(Seller Gstin, process1, 'FG', exact match)
-    
-    // Create a lookup map from process1Json for fast lookups by Seller Gstin
-    const process1LookupMap = {};
-    for (const row of process1Json) {
-      const gstin = row['Seller Gstin'];
-      if (gstin && !process1LookupMap[gstin]) {
-        // Store first match (like VLOOKUP with exact match)
-        process1LookupMap[gstin] = {
-          'Final Invoice No.': row['Final Invoice No.'] || '',
-          'Ship To State Tally Ledger': row['Ship To State Tally Ledger'] || '',
-          'FG': row['FG'] || ''
-        };
+    if (withInventory) {
+      // Create a lookup map from process1Json for fast lookups by Seller Gstin
+      const process1LookupMap = {};
+      for (const row of process1Json) {
+        const gstin = row['Seller Gstin'];
+        if (gstin && !process1LookupMap[gstin]) {
+          // Store first match (like VLOOKUP with exact match)
+          process1LookupMap[gstin] = {
+            'Final Invoice No.': row['Final Invoice No.'] || '',
+            'Ship To State Tally Ledger': row['Ship To State Tally Ledger'] || '',
+            'FG': row['FG'] || ''
+          };
+        }
       }
-    }
-    console.log(`✓ Created lookup map with ${Object.keys(process1LookupMap).length} unique Seller GSTINs`);
-    
-    // Update pivotData with looked-up values
-    for (const pivotRow of pivotData) {
-      const gstin = pivotRow['Seller Gstin'];
-      const lookupData = process1LookupMap[gstin];
-      if (lookupData) {
-        pivotRow['Final Invoice No.'] = lookupData['Final Invoice No.'];
-        pivotRow['Ship To State Tally Ledger'] = lookupData['Ship To State Tally Ledger'];
-        pivotRow['FG'] = lookupData['FG'];
+      console.log(`✓ Created lookup map with ${Object.keys(process1LookupMap).length} unique Seller GSTINs`);
+      
+      // Update pivotData with looked-up values
+      for (const pivotRow of pivotData) {
+        const gstin = pivotRow['Seller Gstin'];
+        const lookupData = process1LookupMap[gstin];
+        if (lookupData) {
+          pivotRow['Final Invoice No.'] = lookupData['Final Invoice No.'];
+          pivotRow['Ship To State Tally Ledger'] = lookupData['Ship To State Tally Ledger'];
+          pivotRow['FG'] = lookupData['FG'];
+        }
       }
+      console.log(`✓ Applied VLOOKUP values to ${pivotData.length} pivot rows`);
+    } else {
+      console.log('✓ Skipping pivot VLOOKUP (withInventory=false)');
     }
-    console.log(`✓ Applied VLOOKUP values to ${pivotData.length} pivot rows`);
     
     const pivotSheet = XLSX.utils.json_to_sheet(pivotData);
     
