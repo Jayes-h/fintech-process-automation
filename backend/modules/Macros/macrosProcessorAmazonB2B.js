@@ -288,6 +288,7 @@ class FormulaEvaluator {
 
   /**
    * Evaluate complex arithmetic with multiple operations
+   * Uses a safe tokenized approach to avoid JavaScript operator interpretation issues
    */
   evaluateComplexArithmetic(formula, currentRow) {
     try {
@@ -304,25 +305,148 @@ class FormulaEvaluator {
         expression = expression.replace(match[0], numericValue);
       }
 
-      // Evaluate the expression safely
       // Remove any remaining non-numeric, non-operator characters
-      expression = expression.replace(/[^0-9+\-*/().\s]/g, '');
+      expression = expression.replace(/[^0-9+\-*/().\s]/g, '').trim();
       
-      // Use Function constructor for safe evaluation (only numbers and operators)
-      if (/^[0-9+\-*/().\s]+$/.test(expression)) {
-        try {
-          return Function(`"use strict"; return (${expression})`)();
-        } catch (e) {
-          console.warn(`Error evaluating arithmetic: ${expression}`, e.message);
-          return 0;
-        }
-      }
-      
-      return 0;
+      // Use a safe tokenized evaluation approach
+      // This avoids issues with JavaScript interpreting -- as decrement operator
+      return this.safeEvaluateExpression(expression);
     } catch (error) {
       console.warn(`Error in complex arithmetic: ${formula}`, error.message);
       return 0;
     }
+  }
+
+  /**
+   * Safely evaluate a mathematical expression using tokenization
+   * Handles: +, -, *, /, parentheses, and negative numbers
+   */
+  safeEvaluateExpression(expr) {
+    try {
+      // Tokenize the expression
+      const tokens = [];
+      let currentNum = '';
+      let i = 0;
+      
+      while (i < expr.length) {
+        const char = expr[i];
+        
+        if (char === ' ') {
+          if (currentNum) {
+            tokens.push(parseFloat(currentNum));
+            currentNum = '';
+          }
+          i++;
+          continue;
+        }
+        
+        if ((char >= '0' && char <= '9') || char === '.') {
+          currentNum += char;
+          i++;
+          continue;
+        }
+        
+        if (char === '-') {
+          // Check if this is a negative sign (unary minus) or subtraction operator
+          // It's unary if: at start, after operator, or after open paren
+          const lastToken = tokens[tokens.length - 1];
+          const isUnary = tokens.length === 0 || 
+                          lastToken === '+' || lastToken === '-' || 
+                          lastToken === '*' || lastToken === '/' || 
+                          lastToken === '(';
+          
+          if (currentNum) {
+            tokens.push(parseFloat(currentNum));
+            currentNum = '';
+          }
+          
+          if (isUnary) {
+            // Start of a negative number
+            currentNum = '-';
+          } else {
+            // Subtraction operator
+            tokens.push('-');
+          }
+          i++;
+          continue;
+        }
+        
+        if (char === '+' || char === '*' || char === '/' || char === '(' || char === ')') {
+          if (currentNum) {
+            tokens.push(parseFloat(currentNum));
+            currentNum = '';
+          }
+          tokens.push(char);
+          i++;
+          continue;
+        }
+        
+        i++;
+      }
+      
+      if (currentNum) {
+        tokens.push(parseFloat(currentNum));
+      }
+      
+      // Evaluate the tokenized expression using recursive descent parser
+      return this.evaluateTokens(tokens);
+    } catch (e) {
+      console.warn(`Error in safe expression evaluation: ${expr}`, e.message);
+      return 0;
+    }
+  }
+
+  /**
+   * Evaluate tokenized expression respecting operator precedence
+   */
+  evaluateTokens(tokens) {
+    let pos = 0;
+    
+    const parseExpression = () => {
+      let left = parseTerm();
+      
+      while (pos < tokens.length && (tokens[pos] === '+' || tokens[pos] === '-')) {
+        const op = tokens[pos++];
+        const right = parseTerm();
+        if (op === '+') {
+          left = left + right;
+        } else {
+          left = left - right;
+        }
+      }
+      
+      return left;
+    };
+    
+    const parseTerm = () => {
+      let left = parseFactor();
+      
+      while (pos < tokens.length && (tokens[pos] === '*' || tokens[pos] === '/')) {
+        const op = tokens[pos++];
+        const right = parseFactor();
+        if (op === '*') {
+          left = left * right;
+        } else {
+          left = right !== 0 ? left / right : 0;
+        }
+      }
+      
+      return left;
+    };
+    
+    const parseFactor = () => {
+      if (tokens[pos] === '(') {
+        pos++; // skip '('
+        const result = parseExpression();
+        pos++; // skip ')'
+        return result;
+      }
+      
+      const value = tokens[pos++];
+      return typeof value === 'number' ? value : 0;
+    };
+    
+    return parseExpression();
   }
 
   /**
@@ -426,7 +550,10 @@ function findColumnIndex(ws, headerName) {
  * STEP 0: Filter rows by Transaction Type
  * Only keep rows where Transaction Type = "Shipment" or "Refund"
  * This MUST happen BEFORE any column insertion or formula application
- * Uses Excel-style row deletion (bottom → top) to avoid index shifting
+ * 
+ * OPTIMIZED: Uses in-memory filtering instead of spliceRows for performance
+ * The old approach called spliceRows for each deleted row, which is O(n²) and very slow
+ * New approach: Read all rows to keep, then rebuild worksheet once - O(n)
  */
 function filterRowsByTransactionType(ws) {
   console.log('=== STEP 0: Filtering rows by Transaction Type ===');
@@ -435,8 +562,9 @@ function filterRowsByTransactionType(ws) {
   const headerRow = ws.getRow(1);
   let transactionTypeColIndex = null;
   let quantityColIndex = null;
+  const maxColCount = headerRow.cellCount || 200;
   
-  for (let i = 1; i <= headerRow.cellCount; i++) {
+  for (let i = 1; i <= maxColCount; i++) {
     const cellValue = headerRow.getCell(i).value;
     if (cellValue) {
       const cellStr = String(cellValue).trim();
@@ -473,15 +601,21 @@ function filterRowsByTransactionType(ws) {
   let refundQuantityAdjusted = 0;
   const seenValues = {}; // Track what values we see for debugging
   
-  // Step 2: Delete rows that are NOT Shipment or Refund
-  // Excel-style row deletion: iterate from bottom → top to avoid index shifting
-  for (let rowNum = totalRows; rowNum >= 2; rowNum--) {
+  // Step 2: OPTIMIZED - Collect rows to keep in memory first (instead of deleting one by one)
+  // This is much faster than spliceRows which rebuilds the worksheet on each call
+  const rowsToKeep = [];
+  
+  console.log('Scanning rows to filter...');
+  for (let rowNum = 2; rowNum <= totalRows; rowNum++) {
+    // Progress logging every 1000 rows
+    if (rowNum % 1000 === 0) {
+      console.log(`Filtering progress: ${rowNum}/${totalRows} rows scanned...`);
+    }
+    
     const row = ws.getRow(rowNum);
     
     // Skip empty rows
     if (!row || row.cellCount === 0) {
-      // Delete empty rows
-      ws.spliceRows(rowNum, 1);
       deletedRows++;
       continue;
     }
@@ -500,27 +634,57 @@ function filterRowsByTransactionType(ws) {
     
     // Only keep rows where Transaction Type is "Shipment" or "Refund" (case-insensitive)
     if (transactionTypeNormalized === 'shipment' || transactionTypeNormalized === 'refund') {
-      keptRows++;
-      
-      // If Transaction Type is "Refund", make Quantity negative
-      if (transactionTypeNormalized === 'refund' && quantityColIndex) {
-        const quantityCell = row.getCell(quantityColIndex);
-        const quantityValue = quantityCell.value;
+      // Collect all cell values from this row
+      const rowData = [];
+      for (let col = 1; col <= maxColCount; col++) {
+        const cell = row.getCell(col);
+        let cellValue = cell.value;
         
-        // Convert to number and make negative (if positive)
-        if (quantityValue !== null && quantityValue !== undefined) {
-          const numericQuantity = parseFloat(quantityValue);
-          if (!isNaN(numericQuantity) && numericQuantity > 0) {
-            // Make it negative
-            quantityCell.value = -Math.abs(numericQuantity);
-            refundQuantityAdjusted++;
+        // If Transaction Type is "Refund", make Quantity negative
+        if (col === quantityColIndex && transactionTypeNormalized === 'refund') {
+          if (cellValue !== null && cellValue !== undefined) {
+            const numericQuantity = parseFloat(cellValue);
+            if (!isNaN(numericQuantity) && numericQuantity > 0) {
+              cellValue = -Math.abs(numericQuantity);
+              refundQuantityAdjusted++;
+            }
           }
         }
+        
+        rowData.push(cellValue);
       }
+      rowsToKeep.push(rowData);
+      keptRows++;
     } else {
-      // Delete this row - it's NOT Shipment or Refund
-      ws.spliceRows(rowNum, 1);
       deletedRows++;
+    }
+  }
+  
+  console.log(`Scan complete. Rebuilding worksheet with ${keptRows} filtered rows...`);
+  
+  // Step 3: Rebuild the worksheet with only the rows to keep
+  // First, clear all existing data rows (keep header row 1)
+  // Use spliceRows once to remove all data rows at once
+  if (totalRows > 1) {
+    ws.spliceRows(2, totalRows - 1);
+  }
+  
+  // Now add back only the rows we want to keep
+  for (let i = 0; i < rowsToKeep.length; i++) {
+    const newRowNum = i + 2; // Start from row 2 (after header)
+    const newRow = ws.getRow(newRowNum);
+    const rowData = rowsToKeep[i];
+    
+    for (let col = 1; col <= rowData.length; col++) {
+      if (rowData[col - 1] !== null && rowData[col - 1] !== undefined) {
+        newRow.getCell(col).value = rowData[col - 1];
+      }
+    }
+    newRow.commit();
+    
+    // Progress logging every 1000 rows
+    if ((i + 1) % 1000 === 0) {
+      console.log(`Rebuild progress: ${i + 1}/${keptRows} rows written...`);
     }
   }
   
@@ -856,8 +1020,7 @@ function applyFormulas(ws, sourceSheetName = 'Source', date = '', withInventory 
         }
       }
 
-      // Column Final Taxable Sales Value (AU): =Principal Amount - Final Taxable Shipping Value
-      // Based on VBA: =AF2-AV2, where AF is Principal Amount and AV is Final Taxable Shipping Value
+      // Column Final Taxable Sales Value (AU): =Tax Exclusive Gross - Final Taxable Shipping Value
       // This depends on Final Taxable Shipping Value, so calculate it after
       if (colFinalTaxableSalesValue && colTaxExclusiveGross && colFinalTaxableShippingValue) {
         ws.getCell(`${colFinalTaxableSalesValue}${row}`).value = {
@@ -1080,6 +1243,13 @@ function generatePivot(process1Data, sourceSheet = null, withInventory = true) {
     return isNaN(num) ? 0 : num;
   };
 
+  // ========== SUM VALIDATION TRACKING ==========
+  // Track totals for validation: process1 sum should equal pivot sum
+  let totalProcess1FinalTaxableSalesValue = 0;
+  let totalSkippedFinalTaxableSalesValue = 0;
+  let skippedRowCount = 0;
+  let processedRowCount = 0;
+
   /**
    * Normalize string values for grouping (handle null/undefined as empty string).
    * Excel PivotTable treats empty cells as empty strings in row grouping.
@@ -1151,13 +1321,20 @@ function generatePivot(process1Data, sourceSheet = null, withInventory = true) {
   // NOTE: Filters (Transaction Type, Final Tax rate) exist in VBA as PageFields
   // but do NOT affect aggregation unless explicitly applied. We process ALL rows.
   process1Data.forEach((row, index) => {
+    // Track the Final Taxable Sales Value for this row (before any skipping)
+    const rowFinalTaxableSalesValue = safeNumber(row['Final Taxable Sales Value']) - safeNumber(row['Final Taxable Shipping Value']);
+    totalProcess1FinalTaxableSalesValue += rowFinalTaxableSalesValue;
+    
     // Skip rows with missing essential grouping fields
     const gstin = normalizeString(row['Seller Gstin']);
     if (!gstin) {
-      console.warn(`Skipping row ${index + 1}: Missing Seller Gstin`);
+      console.warn(`Skipping row ${index + 1}: Missing Seller Gstin (Final Taxable Sales Value: ${rowFinalTaxableSalesValue})`);
+      totalSkippedFinalTaxableSalesValue += rowFinalTaxableSalesValue;
+      skippedRowCount++;
       return;
     }
-
+    
+    processedRowCount++;
     const groupKey = createGroupKey(row);
 
     // Initialize pivot row if it doesn't exist
@@ -1209,7 +1386,7 @@ function generatePivot(process1Data, sourceSheet = null, withInventory = true) {
     // Each field uses Function = xlSum (SUM aggregation only)
     // Handle missing columns gracefully by defaulting to 0
     pivot[groupKey]['Sum of Quantity'] += safeNumber(row['Quantity']);
-    pivot[groupKey]['Sum of Final Taxable Sales Value'] += safeNumber(row['Final Taxable Sales Value']);
+    pivot[groupKey]['Sum of Final Taxable Sales Value'] += safeNumber(row['Final Taxable Sales Value']) ;
     pivot[groupKey]['Sum of Final CGST Tax'] += safeNumber(row['Final CGST Tax']);
     pivot[groupKey]['Sum of Final SGST Tax'] += safeNumber(row['Final SGST Tax']);
     pivot[groupKey]['Sum of Final IGST Tax'] += safeNumber(row['Final IGST Tax']);
@@ -1300,7 +1477,50 @@ function generatePivot(process1Data, sourceSheet = null, withInventory = true) {
     console.log('Pivot table columns:', Object.keys(orderedPivotRows[0]));
   }
 
-  return orderedPivotRows;
+  // ========== SUM VALIDATION ==========
+  // Calculate total "Sum of Final Taxable Sales Value" from pivot rows
+  const totalPivotFinalTaxableSalesValue = orderedPivotRows.reduce(
+    (sum, row) => sum + safeNumber(row['Sum of Final Taxable Sales Value']), 
+    0
+  );
+  
+  // Validation statistics
+  const validationStats = {
+    totalProcess1Rows: process1Data.length,
+    processedRows: processedRowCount,
+    skippedRows: skippedRowCount,
+    totalProcess1FinalTaxableSalesValue: totalProcess1FinalTaxableSalesValue,
+    totalSkippedFinalTaxableSalesValue: totalSkippedFinalTaxableSalesValue,
+    totalPivotFinalTaxableSalesValue: totalPivotFinalTaxableSalesValue,
+    difference: Math.abs(totalProcess1FinalTaxableSalesValue - totalPivotFinalTaxableSalesValue),
+    isValid: Math.abs(totalProcess1FinalTaxableSalesValue - totalPivotFinalTaxableSalesValue) < 0.01
+  };
+  
+  // Log validation results
+  console.log('\n========== SUM VALIDATION ==========');
+  console.log(`Process1 Total Rows: ${validationStats.totalProcess1Rows}`);
+  console.log(`  - Processed: ${validationStats.processedRows}`);
+  console.log(`  - Skipped (missing Seller Gstin): ${validationStats.skippedRows}`);
+  console.log(`Process1 Sum of "Final Taxable Sales Value": ${validationStats.totalProcess1FinalTaxableSalesValue.toFixed(2)}`);
+  console.log(`  - From skipped rows: ${validationStats.totalSkippedFinalTaxableSalesValue.toFixed(2)}`);
+  console.log(`Pivot Sum of "Sum of Final Taxable Sales Value": ${validationStats.totalPivotFinalTaxableSalesValue.toFixed(2)}`);
+  console.log(`Difference: ${validationStats.difference.toFixed(2)}`);
+  if (validationStats.isValid) {
+    console.log('✓ VALIDATION PASSED: Sums match!');
+  } else {
+    console.warn('⚠ VALIDATION WARNING: Sums do not match!');
+    if (validationStats.skippedRows > 0) {
+      console.warn(`  → ${validationStats.skippedRows} rows were skipped due to missing Seller Gstin`);
+      console.warn(`  → Skipped rows contained ${validationStats.totalSkippedFinalTaxableSalesValue.toFixed(2)} in Final Taxable Sales Value`);
+    }
+  }
+  console.log('=====================================\n');
+
+  // Return both pivot rows and validation stats
+  return {
+    pivotRows: orderedPivotRows,
+    validationStats: validationStats
+  };
 }
 
 /**
@@ -1412,14 +1632,14 @@ async function processMacrosB2B(rawFileBuffer, skuFileBuffer, brandName, date, s
       throw new Error(`Failed to load SKU file into ExcelJS: ${excelJSError.message}. The file was successfully read and converted, but ExcelJS cannot process it.`);
     }
 
-    // Get or create "amazon-b2c-process1" worksheet
-    let ws = workbook.getWorksheet('amazon-b2c-process1');
+    // Get or create "amazon-b2b-process1" worksheet
+    let ws = workbook.getWorksheet('amazon-b2b-process1');
     if (!ws) {
       ws = workbook.getWorksheet('Process 1') || workbook.getWorksheet('Process1') || workbook.getWorksheet('Proccess 1');
       if (!ws) {
         ws = workbook.worksheets[0];
         if (ws) {
-          ws.name = 'amazon-b2c-process1';
+          ws.name = 'amazon-b2b-process1';
         }
       }
     }
@@ -1468,7 +1688,7 @@ async function processMacrosB2B(rawFileBuffer, skuFileBuffer, brandName, date, s
     // ============================================================
     console.log('Step 1: Insert required columns');
     console.log(`withInventory: ${withInventory}`);
-    insertColumnsAndRenameHeaders(workbook, 'amazon-b2c-process1', withInventory);
+    insertColumnsAndRenameHeaders(workbook, 'amazon-b2b-process1', withInventory);
 
     // ============================================================
     // STEP 2: APPLY FORMULAS
@@ -1653,7 +1873,9 @@ async function processMacrosB2B(rawFileBuffer, skuFileBuffer, brandName, date, s
     // For proper operation, formulas should be evaluated first (by Excel or formula engine)
     // The pivot function safely handles any remaining strings, nulls, or invalid values
     // Pass source sheet to pivot function for Final Invoice No. lookup
-    const pivotData = generatePivot(process1Json, mainSourceSheet, withInventory);
+    const pivotResult = generatePivot(process1Json, mainSourceSheet, withInventory);
+    const pivotData = pivotResult.pivotRows;
+    const pivotValidationStats = pivotResult.validationStats;
     console.log(`Generated ${pivotData.length} pivot rows`);
 
     // ============================================================
@@ -1707,12 +1929,12 @@ async function processMacrosB2B(rawFileBuffer, skuFileBuffer, brandName, date, s
     XLSX.utils.book_append_sheet(outputWorkbook, report1Sheet, 'Report1');
 
     // ============================================================
-    // STEP 6: ADD AMAZON-B2C-PROCESS1 SHEET TO OUTPUT WORKBOOK
+    // STEP 6: ADD AMAZON-B2B-PROCESS1 SHEET TO OUTPUT WORKBOOK
     // ============================================================
-    console.log('Step 6: Add amazon-b2c-process1 sheet to output workbook');
+    console.log('Step 6: Add amazon-b2b-process1 sheet to output workbook');
     const process1Sheet = XLSX.utils.json_to_sheet(process1Json);
-    XLSX.utils.book_append_sheet(outputWorkbook, process1Sheet, 'amazon-b2c-process1');
-    console.log(`✓ Added amazon-b2c-process1 sheet with ${process1Json.length} rows`);
+    XLSX.utils.book_append_sheet(outputWorkbook, process1Sheet, 'amazon-b2b-process1');
+    console.log(`✓ Added amazon-b2b-process1 sheet with ${process1Json.length} rows`);
 
     // ============================================================
     // STEP 7: ADD SOURCE-SKU SHEET TO OUTPUT WORKBOOK
@@ -1746,13 +1968,30 @@ async function processMacrosB2B(rawFileBuffer, skuFileBuffer, brandName, date, s
     console.log(`Sheet names: ${outputWorkbook.SheetNames.join(', ')}`);
     console.log('===================================================\n');
 
+    // ============================================================
+    // FINAL SUM VALIDATION SUMMARY
+    // ============================================================
+    console.log('========== FINAL SUM VALIDATION SUMMARY ==========');
+    console.log(`Process1 "Final Taxable Sales Value" Total: ${pivotValidationStats.totalProcess1FinalTaxableSalesValue.toFixed(2)}`);
+    console.log(`Pivot "Sum of Final Taxable Sales Value" Total: ${pivotValidationStats.totalPivotFinalTaxableSalesValue.toFixed(2)}`);
+    if (pivotValidationStats.isValid) {
+      console.log('✓ SUMS MATCH - Data integrity verified!');
+    } else {
+      console.warn(`⚠ SUMS DIFFER by ${pivotValidationStats.difference.toFixed(2)}`);
+      if (pivotValidationStats.skippedRows > 0) {
+        console.warn(`  → Cause: ${pivotValidationStats.skippedRows} rows skipped (missing Seller Gstin)`);
+      }
+    }
+    console.log('===================================================\n');
+
     console.log('========== MACROS PROCESSING COMPLETE ==========\n');
 
     return {
       process1Json,
       pivotData,
       workbook, // ExcelJS workbook with formulas
-      outputWorkbook // XLSX workbook with pivot and report
+      outputWorkbook, // XLSX workbook with pivot and report
+      validationStats: pivotValidationStats // Sum validation statistics
     };
   } catch (error) {
     // Preserve missingSKUs if it exists in the error
