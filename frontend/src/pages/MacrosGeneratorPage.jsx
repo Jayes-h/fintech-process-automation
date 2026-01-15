@@ -173,7 +173,7 @@ const MacrosGeneratorPage = () => {
     try {
       setLoading(true);
       setError(null);
-      const blob = await macrosApi.downloadCombined(fileId);
+      const blob = await macrosApi.downloadCombined(fileId,portalName);
       if (!blob || blob.size === 0) {
         throw new Error('Received empty file');
       }

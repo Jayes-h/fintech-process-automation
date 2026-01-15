@@ -163,33 +163,73 @@ export const misDataApi = {
 };
 
 export const macrosApi = {
-  generateMacros: async (rawFile, brandId, sellerPortalId, date, fileType = null, withInventory = true) => {
+  generateMacros: async (
+    rawFile,
+    brandId,
+    sellerPortalId,
+    date,
+    fileType = null,
+    withInventory = true
+  ) => {
     const formData = new FormData();
     formData.append('rawFile', rawFile);
     formData.append('brandId', brandId);
     formData.append('sellerPortalId', sellerPortalId);
     formData.append('date', date);
+  
     if (fileType) {
       formData.append('fileType', fileType);
     }
-    // Add withInventory parameter (convert boolean to string for FormData)
+  
     formData.append('withInventory', withInventory.toString());
-    
-    // Determine endpoint based on fileType (B2B vs B2C)
-    // B2B uses /macros-b2b/generate with different processing logic
-    const endpoint = fileType === 'B2B' ? '/macros-b2b/generate' : '/macros/generate';
-    
-    // Debug: Log what we're sending
-    console.log('Generating macros with:', { brandId, sellerPortalId, date, fileType, withInventory, endpoint, hasRawFile: !!rawFile });
-    
+  
+    // ✅ STEP 1: Resolve seller portal UUID → portal details
+    const sellerPortalResponse =
+      await sellerPortalsApi.getSellerPortalById(sellerPortalId);
+  
+    const portalName = sellerPortalResponse?.data?.name?.toUpperCase();
+    console.log("portal name =====>",portalName);
+    if (!portalName) {
+      throw new Error('Invalid seller portal ID');
+    }
+  
+    // ✅ STEP 2: Decide endpoint
+    let endpoint;
+  
+    if (portalName === 'AMAZON') {
+      // Only Amazon needs B2B / B2C split
+      console.log("amazon");
+      endpoint =
+        fileType === 'B2B'
+          ? '/macros-b2b/generate'
+          : '/macros/generate';
+    } else {
+      console.log("flipkart");
+      // Flipkart & others (no B2B/B2C logic)
+      endpoint = 'macros-flipkart/generate';
+    }
+  
+    // Debug log
+    console.log('Generating macros with:', {
+      brandId,
+      sellerPortalId,
+      portalName,
+      date,
+      fileType,
+      withInventory,
+      endpoint,
+      hasRawFile: !!rawFile
+    });
+  
     const response = await api.post(endpoint, formData, {
       headers: {
         'Content-Type': 'multipart/form-data'
       }
     });
+  
     return response.data;
   },
-
+  
   getAllBrands: async () => {
     const response = await api.get('/macros/brands');
     return response.data;
@@ -232,11 +272,20 @@ export const macrosApi = {
     return response.data;
   },
 
-  downloadCombined: async (fileId) => {
-    const response = await api.get(`/macros/download/combined/${fileId}`, {
-      responseType: 'blob'
-    });
-    return response.data;
+  downloadCombined: async (fileId,portalName) => {
+    if (portalName === 'AMAZON') {
+      const response = await api.get(`/macros/download/combined/${fileId}`, {
+        responseType: 'blob'
+      });
+      return response.data;
+    } else {
+      const response = await api.get(`/macros-flipkart/download/combined/${fileId}`, {
+        responseType: 'blob'
+      });
+      return response.data;
+    }
+
+
   },
 
   deleteMacrosFile: async (fileId) => {

@@ -119,8 +119,9 @@ class FormulaEvaluator {
 
       // Search in source sheet
       let foundRow = null;
-      const maxRow = Math.min(sourceWs.rowCount || 1000, 1000);
-
+      const maxRow = Math.min(sourceWs.actualRowCount || 12000, 12000);
+      console.log("sourceWs.rowCount==========================>",sourceWs.rowCount);
+      console.log("maxRow==========================>",maxRow);
       for (let row = 1; row <= maxRow; row++) {
         const cell = sourceWs.getCell(`${startCol}${row}`);
         const cellValue = cell.value;
@@ -592,7 +593,7 @@ function filterRowsByTransactionType(ws) {
   }
   
   // Get total row count
-  const totalRows = ws.rowCount || 1;
+  const totalRows = ws.actualRowCount || 1;
   console.log(`Total rows before filtering: ${totalRows}`);
   
   // Track statistics
@@ -606,6 +607,7 @@ function filterRowsByTransactionType(ws) {
   const rowsToKeep = [];
   
   console.log('Scanning rows to filter...');
+  console.log("total rows",totalRows);
   for (let rowNum = 2; rowNum <= totalRows; rowNum++) {
     // Progress logging every 1000 rows
     if (rowNum % 1000 === 0) {
@@ -698,10 +700,17 @@ function filterRowsByTransactionType(ws) {
   }
   
   // Verify the filtering worked
-  const remainingRows = ws.rowCount || 1;
+  const remainingRows = ws.actualRowCount || 1;
   console.log(`Total rows after filtering: ${remainingRows} (should be ${keptRows + 1} including header)`);
   
   console.log('✓ Transaction Type filtering completed successfully');
+
+  ws._rows.length = keptRows + 1;
+ws._rowCount = keptRows + 1;
+
+console.log(
+  `Hard reset worksheet rows. actualRowCount=${ws.actualRowCount}`
+);
   return keptRows;
 }
 
@@ -734,7 +743,7 @@ function insertColumnsAndRenameHeaders(workbook, sheetName, withInventory = true
   }
 
   // Get actual row and column counts (don't process more than necessary)
-  const maxRow = ws.rowCount || 1;
+  const maxRow = ws.actualRowCount || 1;
   const maxCol = ws.columnCount || 200;
 
   /**
@@ -855,7 +864,7 @@ function insertColumnsAndRenameHeaders(workbook, sheetName, withInventory = true
  * @param {boolean} withInventory - If false, skip FG, Ship To State Tally Ledger, Final Invoice No. formulas
  */
 function applyFormulas(ws, sourceSheetName = 'Source', withInventory = true) {
-  const lastRow = Math.min(ws.rowCount || 50000, 50000);
+  const lastRow = Math.min(ws.actualRowCount || 50000, 50000);
 
   // Helper to safely find column and get letter
   const getColLetter = (headerName) => {
@@ -903,7 +912,7 @@ function applyFormulas(ws, sourceSheetName = 'Source', withInventory = true) {
       // Only apply if withInventory is true
       if (withInventory && colSku && colFG) {
         ws.getCell(`${colFG}${row}`).value = {
-          formula: `VLOOKUP(${colSku}${row},'source-sku'!$A$2:$B$229,2,FALSE)`
+          formula: `VLOOKUP(${colSku}${row},'source-sku'!$A$2:$B$229,2,TRUE)`
         };
       }
 
@@ -919,7 +928,7 @@ function applyFormulas(ws, sourceSheetName = 'Source', withInventory = true) {
       // Only apply if withInventory is true
       if (withInventory && colShipToState && colFinalInvoiceNo) {
         ws.getCell(`${colFinalInvoiceNo}${row}`).value = {
-          formula: `VLOOKUP(${colShipToState}${row},'source-state'!$A$2:$C$37,2,FALSE)`
+          formula: `VLOOKUP(${colShipToState}${row},'source-state'!$A$2:$C$37,2,TRUE)`
         };
       }
 
@@ -1093,7 +1102,7 @@ function buildStateToInvoiceMap(sourceSheet) {
 
     // If we found both columns, build the map
     if (statesColIndex && invoiceColIndex) {
-      const maxRow = Math.min(sourceSheet.rowCount || 100, 100);
+      const maxRow = Math.min(sourceSheet.actualRowCount || 100, 100);
       const statesColLetter = getColumnLetter(statesColIndex);
       const invoiceColLetter = getColumnLetter(invoiceColIndex);
       
@@ -1136,7 +1145,7 @@ function buildStateToInvoiceMap(sourceSheet) {
  * 3. NaN propagation: parseFloat() returns NaN for non-numeric strings, causing NaN + number = NaN.
  *    FIX: Use safe numeric conversion: Number(value) || 0, which handles NaN correctly.
  * 
- * 4. Filter handling: VBA shows Transaction Type and Final Tax rate as PageFields (filters),
+ * 4. Filter handling: VBA shows Transacti on Type and Final Tax rate as PageFields (filters),
  *    but they don't affect aggregation unless explicitly applied. Current code correctly doesn't filter.
  * 
  * 5. Excel PivotTable behavior: Groups by 4 fields in exact order, sums all data fields.
@@ -1153,172 +1162,117 @@ function buildStateToInvoiceMap(sourceSheet) {
 function generatePivot(process1Data, sourceSheet = null, withInventory = true) {
   const pivot = {};
 
-  /**
-   * Safe numeric conversion matching Excel behavior:
-   * - null, undefined, empty string → 0
-   * - Non-numeric strings → 0
-   * - NaN from parseFloat → 0
-   * - Valid numbers → number
-   * Excel treats blanks and invalid values as 0 in SUM operations.
-   */
+  // ---------- SAFE NUMBER ----------
   const safeNumber = (value) => {
     if (value === null || value === undefined || value === '') return 0;
-    // Handle string numbers (from formulas evaluated to strings)
     if (typeof value === 'string') {
-      // Remove commas and whitespace that might be in formatted numbers
       const cleaned = value.replace(/,/g, '').trim();
       const num = Number(cleaned);
       return isNaN(num) ? 0 : num;
     }
-    // Handle numbers directly
     const num = Number(value);
     return isNaN(num) ? 0 : num;
   };
 
-  // ========== SUM VALIDATION TRACKING ==========
-  // Track totals for validation: process1 sum should equal pivot sum
-  let totalProcess1FinalTaxableSalesValue = 0;
-  let totalSkippedFinalTaxableSalesValue = 0;
-  let skippedRowCount = 0;
-  let processedRowCount = 0;
-
-  /**
-   * Normalize string values for grouping (handle null/undefined as empty string).
-   * Excel PivotTable treats empty cells as empty strings in row grouping.
-   */
+  // ---------- NORMALIZE STRING ----------
   const normalizeString = (value) => {
     if (value === null || value === undefined) return '';
     return String(value).trim();
   };
 
-  /**
-   * Create stable, collision-free key from grouping fields.
-   * Using JSON.stringify ensures:
-   * - No collisions from special characters (like '|' in values)
-   * - Consistent ordering
-   * - Proper handling of empty strings vs null vs undefined
-   * 
-   * NOTE: Final Invoice No. (column AB) and Ship To State Tally Ledger (column AA) 
-   * are already calculated columns in Process 1 data, so we use them directly.
-   * 
-   * When withInventory=false, only group by Seller Gstin
-   */
+  // ---------- GROUP KEY ----------
   const createGroupKey = (row) => {
     if (withInventory) {
       return JSON.stringify({
         gstin: normalizeString(row['Seller Gstin']),
-        invoice: normalizeString(row['Final Invoice No.']), // Column AB - use directly from Process 1
-        ledger: normalizeString(row['Ship To State Tally Ledger']), // Column AA - use directly from Process 1
+        invoice: normalizeString(row['Final Invoice No.']),
+        ledger: normalizeString(row['Ship To State Tally Ledger']),
         fg: normalizeString(row['FG'])
       });
-    } else {
-      // Without inventory, only group by Seller Gstin
-      return JSON.stringify({
-        gstin: normalizeString(row['Seller Gstin'])
-      });
     }
+    return JSON.stringify({
+      gstin: normalizeString(row['Seller Gstin'])
+    });
   };
 
-  // Validate that required columns exist in process1Data
-  if (process1Data.length > 0) {
-    const sampleRow = process1Data[0];
-    const requiredColumns = [
-      'Seller Gstin',
-      'Final Invoice No.',
-      'Ship To State Tally Ledger',
-      'FG',
-      'Quantity',
-      'Final Taxable Sales Value',
-      'Final CGST Tax',
-      'Final SGST Tax',
-      'Final IGST Tax',
-      'Final Taxable Shipping Value',
-      'Final Shipping CGST Tax',
-      'Final Shipping SGST Tax',
-      'Final Shipping IGST Tax',
-      'Tcs Cgst Amount',
-      'Tcs Sgst Amount',
-      'Tcs Igst Amount',
-      'Final Amount Receivable'
-    ];
-    
-    const missingColumns = requiredColumns.filter(col => !(col in sampleRow));
-    if (missingColumns.length > 0) {
-      console.warn('Missing columns in Process 1 data:', missingColumns);
-      console.log('Available columns:', Object.keys(sampleRow).slice(0, 20));
-    }
-  }
+  // ---------- VALIDATION TRACKERS ----------
+  let totalProcess1FinalTaxableSalesValue = 0;
+  let processedRowCount = 0;
+  let skippedRowCount = 0;
 
-  // Process each row and aggregate by the 4-group key
-  // NOTE: Filters (Transaction Type, Final Tax rate) exist in VBA as PageFields
-  // but do NOT affect aggregation unless explicitly applied. We process ALL rows.
-  process1Data.forEach((row, index) => {
-    // Track the Final Taxable Sales Value for this row (before any skipping)
-    const rowFinalTaxableSalesValue = safeNumber(row['Final Taxable Sales Value']);
-    totalProcess1FinalTaxableSalesValue += rowFinalTaxableSalesValue;
-    
-    // Skip rows with missing essential grouping fields
+  // ---------- SELLER LEVEL MAPS (ONLY FOR SALES VALUE) ----------
+  const sellerTaxableSalesMap = {};
+  const sellerTaxableShippingMap = {};
+
+  // ---------- FIRST PASS: SELLER LEVEL TOTALS (ONLY SALES) ----------
+  process1Data.forEach((row) => {
+    const gstin = normalizeString(row['Seller Gstin']);
+    if (!gstin) return;
+
+    const salesValue = safeNumber(row['Final Taxable Sales Value']);
+    const shippingValue = safeNumber(row['Final Taxable Shipping Value']);
+
+    totalProcess1FinalTaxableSalesValue += salesValue;
+
+    sellerTaxableSalesMap[gstin] =
+      (sellerTaxableSalesMap[gstin] || 0) + salesValue;
+
+    sellerTaxableShippingMap[gstin] =
+      (sellerTaxableShippingMap[gstin] || 0) + shippingValue;
+  });
+
+  // ---------- SECOND PASS: BUILD PIVOT ----------
+  process1Data.forEach((row) => {
     const gstin = normalizeString(row['Seller Gstin']);
     if (!gstin) {
-      console.warn(`Skipping row ${index + 1}: Missing Seller Gstin (Final Taxable Sales Value: ${rowFinalTaxableSalesValue})`);
-      totalSkippedFinalTaxableSalesValue += rowFinalTaxableSalesValue;
       skippedRowCount++;
       return;
     }
-    
+
     processedRowCount++;
     const groupKey = createGroupKey(row);
 
-    // Initialize pivot row if it doesn't exist
-    // Use values directly from Process 1 data (columns AA and AB are already calculated)
     if (!pivot[groupKey]) {
-      if (withInventory) {
-        pivot[groupKey] = {
-          'Seller Gstin': gstin,
-          'Final Invoice No.': normalizeString(row['Final Invoice No.']), // Column AB - from Process 1
-          'Ship To State Tally Ledger': normalizeString(row['Ship To State Tally Ledger']), // Column AA - from Process 1
-          'FG': normalizeString(row['FG']),
-          'Sum of Quantity': 0,
-          'Sum of Final Taxable Sales Value': 0,
-          'Sum of Final CGST Tax': 0,
-          'Sum of Final SGST Tax': 0,
-          'Sum of Final IGST Tax': 0,
-          'Sum of Final Taxable Shipping Value': 0,
-          'Sum of Final Shipping CGST Tax': 0,
-          'Sum of Final Shipping SGST Tax': 0,
-          'Sum of Final Shipping IGST Tax': 0,
-          'Sum of Tcs Cgst Amount': 0,
-          'Sum of Tcs Sgst Amount': 0,
-          'Sum of Tcs Igst Amount': 0,
-          'Sum of Final Amount Receivable': 0
-        };
-      } else {
-        // Without inventory, only include Seller Gstin as grouping column
-        pivot[groupKey] = {
-          'Seller Gstin': gstin,
-          'Sum of Quantity': 0,
-          'Sum of Final Taxable Sales Value': 0,
-          'Sum of Final CGST Tax': 0,
-          'Sum of Final SGST Tax': 0,
-          'Sum of Final IGST Tax': 0,
-          'Sum of Final Taxable Shipping Value': 0,
-          'Sum of Final Shipping CGST Tax': 0,
-          'Sum of Final Shipping SGST Tax': 0,
-          'Sum of Final Shipping IGST Tax': 0,
-          'Sum of Tcs Cgst Amount': 0,
-          'Sum of Tcs Sgst Amount': 0,
-          'Sum of Tcs Igst Amount': 0,
-          'Sum of Final Amount Receivable': 0
-        };
-      }
+      pivot[groupKey] = withInventory
+        ? {
+            'Seller Gstin': gstin,
+            'Final Invoice No.': normalizeString(row['Final Invoice No.']),
+            'Ship To State Tally Ledger': normalizeString(row['Ship To State Tally Ledger']),
+            'FG': normalizeString(row['FG']),
+            'Sum of Quantity': 0,
+            'Sum of Final Taxable Sales Value': 0, // filled later with seller-level
+            'Sum of Final CGST Tax': 0,
+            'Sum of Final SGST Tax': 0,
+            'Sum of Final IGST Tax': 0,
+            'Sum of Final Taxable Shipping Value': 0,
+            'Sum of Final Shipping CGST Tax': 0,
+            'Sum of Final Shipping SGST Tax': 0,
+            'Sum of Final Shipping IGST Tax': 0,
+            'Sum of Tcs Cgst Amount': 0,
+            'Sum of Tcs Sgst Amount': 0,
+            'Sum of Tcs Igst Amount': 0,
+            'Sum of Final Amount Receivable': 0
+          }
+        : {
+            'Seller Gstin': gstin,
+            'Sum of Quantity': 0,
+            'Sum of Final Taxable Sales Value': 0, // filled later with seller-level
+            'Sum of Final CGST Tax': 0,
+            'Sum of Final SGST Tax': 0,
+            'Sum of Final IGST Tax': 0,
+            'Sum of Final Taxable Shipping Value': 0,
+            'Sum of Final Shipping CGST Tax': 0,
+            'Sum of Final Shipping SGST Tax': 0,
+            'Sum of Final Shipping IGST Tax': 0,
+            'Sum of Tcs Cgst Amount': 0,
+            'Sum of Tcs Sgst Amount': 0,
+            'Sum of Tcs Igst Amount': 0,
+            'Sum of Final Amount Receivable': 0
+          };
     }
 
-    // Sum all data fields using safe numeric conversion
-    // Excel PivotTable sums all rows matching the group key
-    // Each field uses Function = xlSum (SUM aggregation only)
-    // Handle missing columns gracefully by defaulting to 0
+    // ---------- NORMAL SUMS (INCLUDING TAX COLUMNS) ----------
     pivot[groupKey]['Sum of Quantity'] += safeNumber(row['Quantity']);
-    pivot[groupKey]['Sum of Final Taxable Sales Value'] += safeNumber(row['Final Taxable Sales Value']);
     pivot[groupKey]['Sum of Final CGST Tax'] += safeNumber(row['Final CGST Tax']);
     pivot[groupKey]['Sum of Final SGST Tax'] += safeNumber(row['Final SGST Tax']);
     pivot[groupKey]['Sum of Final IGST Tax'] += safeNumber(row['Final IGST Tax']);
@@ -1332,128 +1286,40 @@ function generatePivot(process1Data, sourceSheet = null, withInventory = true) {
     pivot[groupKey]['Sum of Final Amount Receivable'] += safeNumber(row['Final Amount Receivable']);
   });
 
-  // Convert pivot object to array of rows
-  // Excel PivotTable in Tabular layout with RepeatAllLabels shows one row per unique group combination
+  // ---------- APPLY FINAL TAXABLE SALES FIX (ONLY FOR SALES VALUE) ----------
+  Object.values(pivot).forEach((row) => {
+    const gstin = row['Seller Gstin'];
+    const sales = sellerTaxableSalesMap[gstin] || 0;
+    const shipping = sellerTaxableShippingMap[gstin] || 0;
+
+    row['Sum of Final Taxable Sales Value'] = sales - shipping;
+  });
+
+  // ---------- FINAL ----------
   const pivotRows = Object.values(pivot);
 
-  // Ensure all pivot rows have the correct column order and all required columns
-  // Column order depends on withInventory:
-  // With inventory: Seller Gstin, Final Invoice No., Ship To State Tally Ledger, FG, then all Sum columns
-  // Without inventory: Seller Gstin, then all Sum columns
-  const orderedColumns = withInventory ? [
-    'Seller Gstin',
-    'Final Invoice No.',
-    'Ship To State Tally Ledger',
-    'FG',
-    'Sum of Quantity',
-    'Sum of Final Taxable Sales Value',
-    'Sum of Final CGST Tax',
-    'Sum of Final SGST Tax',
-    'Sum of Final IGST Tax',
-    'Sum of Final Taxable Shipping Value',
-    'Sum of Final Shipping CGST Tax',
-    'Sum of Final Shipping SGST Tax',
-    'Sum of Final Shipping IGST Tax',
-    'Sum of Tcs Cgst Amount',
-    'Sum of Tcs Sgst Amount',
-    'Sum of Tcs Igst Amount',
-    'Sum of Final Amount Receivable'
-  ] : [
-    'Seller Gstin',
-    'Sum of Quantity',
-    'Sum of Final Taxable Sales Value',
-    'Sum of Final CGST Tax',
-    'Sum of Final SGST Tax',
-    'Sum of Final IGST Tax',
-    'Sum of Final Taxable Shipping Value',
-    'Sum of Final Shipping CGST Tax',
-    'Sum of Final Shipping SGST Tax',
-    'Sum of Final Shipping IGST Tax',
-    'Sum of Tcs Cgst Amount',
-    'Sum of Tcs Sgst Amount',
-    'Sum of Tcs Igst Amount',
-    'Sum of Final Amount Receivable'
-  ];
-
-  // Reorder columns in each pivot row to match the required order
-  const orderedPivotRows = pivotRows.map(row => {
-    const orderedRow = {};
-    orderedColumns.forEach(col => {
-      orderedRow[col] = row[col] !== undefined ? row[col] : (col.startsWith('Sum of') ? 0 : '');
-    });
-    return orderedRow;
-  });
-
-  // Sort to match Excel PivotTable default sorting (by row fields in order)
-  // This ensures consistent output matching VBA behavior
-  orderedPivotRows.sort((a, b) => {
-    // Sort by: Seller Gstin first
-    if (a['Seller Gstin'] !== b['Seller Gstin']) {
-      return a['Seller Gstin'].localeCompare(b['Seller Gstin']);
-    }
-    // If withInventory, also sort by Final Invoice No., Ship To State Tally Ledger, FG
-    if (withInventory) {
-      if (a['Final Invoice No.'] !== b['Final Invoice No.']) {
-        return a['Final Invoice No.'].localeCompare(b['Final Invoice No.']);
-      }
-      if (a['Ship To State Tally Ledger'] !== b['Ship To State Tally Ledger']) {
-        return a['Ship To State Tally Ledger'].localeCompare(b['Ship To State Tally Ledger']);
-      }
-      return a['FG'].localeCompare(b['FG']);
-    }
-    return 0;
-  });
-
-  console.log(`Generated ${orderedPivotRows.length} pivot rows from ${process1Data.length} Process 1 rows`);
-  if (orderedPivotRows.length > 0) {
-    console.log('Pivot table columns:', Object.keys(orderedPivotRows[0]));
-  }
-
-  // ========== SUM VALIDATION ==========
-  // Calculate total "Sum of Final Taxable Sales Value" from pivot rows
-  const totalPivotFinalTaxableSalesValue = orderedPivotRows.reduce(
-    (sum, row) => sum + safeNumber(row['Sum of Final Taxable Sales Value']), 
+  const totalPivotFinalTaxableSalesValue = pivotRows.reduce(
+    (sum, r) => sum + safeNumber(r['Sum of Final Taxable Sales Value']),
     0
   );
-  
-  // Validation statistics
-  const validationStats = {
-    totalProcess1Rows: process1Data.length,
-    processedRows: processedRowCount,
-    skippedRows: skippedRowCount,
-    totalProcess1FinalTaxableSalesValue: totalProcess1FinalTaxableSalesValue,
-    totalSkippedFinalTaxableSalesValue: totalSkippedFinalTaxableSalesValue,
-    totalPivotFinalTaxableSalesValue: totalPivotFinalTaxableSalesValue,
-    difference: Math.abs(totalProcess1FinalTaxableSalesValue - totalPivotFinalTaxableSalesValue),
-    isValid: Math.abs(totalProcess1FinalTaxableSalesValue - totalPivotFinalTaxableSalesValue) < 0.01
-  };
-  
-  // Log validation results
-  console.log('\n========== SUM VALIDATION ==========');
-  console.log(`Process1 Total Rows: ${validationStats.totalProcess1Rows}`);
-  console.log(`  - Processed: ${validationStats.processedRows}`);
-  console.log(`  - Skipped (missing Seller Gstin): ${validationStats.skippedRows}`);
-  console.log(`Process1 Sum of "Final Taxable Sales Value": ${validationStats.totalProcess1FinalTaxableSalesValue.toFixed(2)}`);
-  console.log(`  - From skipped rows: ${validationStats.totalSkippedFinalTaxableSalesValue.toFixed(2)}`);
-  console.log(`Pivot Sum of "Sum of Final Taxable Sales Value": ${validationStats.totalPivotFinalTaxableSalesValue.toFixed(2)}`);
-  console.log(`Difference: ${validationStats.difference.toFixed(2)}`);
-  if (validationStats.isValid) {
-    console.log('✓ VALIDATION PASSED: Sums match!');
-  } else {
-    console.warn('⚠ VALIDATION WARNING: Sums do not match!');
-    if (validationStats.skippedRows > 0) {
-      console.warn(`  → ${validationStats.skippedRows} rows were skipped due to missing Seller Gstin`);
-      console.warn(`  → Skipped rows contained ${validationStats.totalSkippedFinalTaxableSalesValue.toFixed(2)} in Final Taxable Sales Value`);
-    }
-  }
-  console.log('=====================================\n');
 
-  // Return both pivot rows and validation stats
   return {
-    pivotRows: orderedPivotRows,
-    validationStats: validationStats
+    pivotRows,
+    validationStats: {
+      totalProcess1Rows: process1Data.length,
+      processedRows: processedRowCount,
+      skippedRows: skippedRowCount,
+      totalProcess1FinalTaxableSalesValue,
+      totalPivotFinalTaxableSalesValue,
+      difference: Math.abs(
+        totalProcess1FinalTaxableSalesValue - totalPivotFinalTaxableSalesValue
+      )
+    }
   };
 }
+
+
+
 
 /**
  * Main processing function
@@ -1679,7 +1545,7 @@ async function processMacros(rawFileBuffer, skuFileBuffer, brandName, date, skuD
 
     // Read all data rows and evaluate formulas
     const process1Json = [];
-    const lastRow = Math.min(ws.rowCount || 50000, 50000);
+    const lastRow = Math.min(ws.actualRowCount || 50000, 50000);
     const missingSKUsSet = new Set();
     
     // Find SKU and Ship To State column numbers for manual VLOOKUP
@@ -1772,8 +1638,22 @@ async function processMacros(rawFileBuffer, skuFileBuffer, brandName, date, skuD
         }
       }
 
+       if (!rowData || Object.keys(rowData).length === 0) {
+        continue; // SKIP ghost / empty rows
+        }
+
+        
       // Only add row if it has some data and no missing SKU errors
       if (hasData && !rowHasError) {
+
+        // 🔥 FIX 4: Refund quantity safety net (FINAL GUARD)
+        if (
+          rowData['Transaction Type']?.toLowerCase() === 'refund' &&
+          Number(rowData['Quantity']) > 0
+        ) {
+          rowData['Quantity'] = -Math.abs(Number(rowData['Quantity']));
+        }
+      
         process1Json.push(rowData);
       }
     }
