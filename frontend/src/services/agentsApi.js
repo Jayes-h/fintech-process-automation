@@ -165,7 +165,7 @@ export const misDataApi = {
 };
 
 export const macrosApi = {
- generateMacros: async (
+  generateMacros: async (
     rawFile,
     brandId,
     sellerPortalId,
@@ -231,7 +231,7 @@ export const macrosApi = {
   
     return response.data;
   },
- 
+  
   getAllBrands: async () => {
     const response = await api.get('/macros/brands');
     return response.data;

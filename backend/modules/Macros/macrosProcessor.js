@@ -1145,7 +1145,7 @@ function buildStateToInvoiceMap(sourceSheet) {
  * 3. NaN propagation: parseFloat() returns NaN for non-numeric strings, causing NaN + number = NaN.
  *    FIX: Use safe numeric conversion: Number(value) || 0, which handles NaN correctly.
  * 
- * 4. Filter handling: VBA shows Transaction Type and Final Tax rate as PageFields (filters),
+ * 4. Filter handling: VBA shows Transacti on Type and Final Tax rate as PageFields (filters),
  *    but they don't affect aggregation unless explicitly applied. Current code correctly doesn't filter.
  * 
  * 5. Excel PivotTable behavior: Groups by 4 fields in exact order, sums all data fields.
