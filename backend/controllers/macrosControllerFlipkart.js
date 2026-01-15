@@ -144,7 +144,8 @@ exports.generateMacros = async (req, res, next) => {
           sellerPortalId: sellerPortalId
         }
       });
-      
+      console.log("state config from api",stateConfig);
+      console.log("state config from api",stateConfig.configData);
       if (stateConfig && stateConfig.configData && stateConfig.configData.states) {
         stateConfigData = stateConfig.configData.states;
         console.log(`Found Flipkart state config with ${stateConfigData.length} states`);

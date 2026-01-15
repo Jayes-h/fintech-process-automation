@@ -26,7 +26,7 @@ exports.getStateConfig = async (req, res, next) => {
         message: 'Flipkart state config not found'
       });
     }
-
+    console.log("reponse of stateconfig api",res);
     res.json({
       success: true,
       data: stateConfig

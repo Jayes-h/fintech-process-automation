@@ -40,7 +40,7 @@ class FormulaEvaluator {
 
   /**
    * Evaluate a formula string
-   * @param {string} formula - Formula string (e.g., "VLOOKUP(N2,Source!$A:$C,2,FALSE)")
+   * @param {string} formula - Formula string (e.g., "VLOOKUP(N2,Source!$A:$C,2,TRUE)")
    * @param {number} currentRow - Current row number for relative references
    * @returns {any} - Evaluated result
    */
@@ -79,7 +79,7 @@ class FormulaEvaluator {
   /**
    * Evaluate VLOOKUP formula
    * VLOOKUP(lookup_value, table_array, col_index_num, [range_lookup])
-   * Example: VLOOKUP(N2,Source!$A:$C,2,FALSE)
+   * Example: VLOOKUP(N2,Source!$A:$C,2,TRUE)
    */
   evaluateVLOOKUP(formula, currentRow) {
     try {
@@ -965,11 +965,11 @@ function applyFormulas(ws, sourceSheetName = 'Source', date = '', withInventory 
   console.log("===================================>00");
   for (let row = 2; row <= lastRow; row++) {
     try {
-      // Column FG (O): =VLOOKUP(Sku,'source-sku'!$A$2:$B$229,2,FALSE)
+      // Column FG (O): =VLOOKUP(Sku,'source-sku'!$A$2:$B$229,2,TRUE)
       // Only apply if withInventory is true
       if (withInventory && colSku && colFG) {
         ws.getCell(`${colFG}${row}`).value = {
-          formula: `VLOOKUP(${colSku}${row},'source-sku'!$A:$B,2,FALSE)`
+          formula: `VLOOKUP(${colSku}${row},'source-sku'!$A:$B,2,TRUE)`
         };
       }
 

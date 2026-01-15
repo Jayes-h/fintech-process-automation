@@ -153,7 +153,7 @@ function normalizeStateName(state) {
  * Process Flipkart raw file and generate all sheets
  * @param {Buffer} rawFileBuffer - Raw Flipkart Excel file buffer
  * @param {Array} skuData - Array of {SKU, FG} objects
- * @param {Array} stateConfigData - Array of {States, 'Flipkart Pay Ledger', 'Invoice No.'} objects
+ * @param {Array} stateConfigData - Array of {States, 'Amazon Pay Ledger', 'Invoice No.'} objects
  * @param {string} brandName - Brand name
  * @param {string} date - Date string (Month-YYYY)
  * @returns {Object} - { workingFileData, pivotData, afterPivotData, outputWorkbook }
@@ -176,19 +176,39 @@ async function processFlipkartMacros(rawFileBuffer, skuData, stateConfigData, br
   console.log(`SKU map loaded with ${Object.keys(skuMap).length} entries`);
 
   // Build state config lookup map (by normalized state name)
-  const stateConfigMap = {};
-  if (stateConfigData && Array.isArray(stateConfigData)) {
-    for (const item of stateConfigData) {
-      const stateName = normalizeStateName(item.States || item.states);
-      if (stateName) {
-        stateConfigMap[stateName] = {
-          tallyLedger: item['Flipkart Pay Ledger'] || item['flipkart pay ledger'] || '',
-          invoiceNo: item['Invoice No.'] || item['Invoice No'] || item['invoice no.'] || ''
-        };
-      }
+const stateConfigMap = {};
+console.log("state condig dataaaa",stateConfigData);
+if (stateConfigData && Array.isArray(stateConfigData)) {
+  for (const item of stateConfigData) {
+    console.log('STATE CONFIG ROW:', item);
+    console.log('AVAILABLE KEYS:', Object.keys(item));
+
+    const stateName = normalizeStateName(item.States || item.states);
+
+    const ledger =
+      item['Flipkart Pay Ledger'] ||
+      item['Flipkart pay ledger'] ||
+      '';
+
+    console.log('STATE → LEDGER MAP:', stateName, '=>', ledger);
+
+    if (stateName) {
+      stateConfigMap[stateName] = {
+        tallyLedger: ledger,
+        invoiceNo:
+          item['Invoice No.'] ||
+          item['Invoice No'] ||
+          item['invoice no.'] ||
+          ''
+      };
     }
   }
+}
+
   console.log(`State config map loaded with ${Object.keys(stateConfigMap).length} entries`);
+  console.log("State config map",  stateConfigMap);
+
+
 
   // Read raw file
   const workbook = XLSX.read(rawFileBuffer, { type: 'buffer', cellDates: true });
@@ -216,14 +236,26 @@ async function processFlipkartMacros(rawFileBuffer, skuData, stateConfigData, br
 
   for (const row of rawData) {
     // Get Event Type for filtering
-    const eventType = String(row['Event Type'] || '').trim();
-    
-    // Filter: only keep Sale or Return
-    if (eventType !== 'Sale' && eventType !== 'Return') {
+    const eventTypeRaw = String(row['Event Type'] || '').trim();
+    const eventSubTypeRaw = String(row['Event Sub Type'] || '').trim();
+
+    const eventType = eventTypeRaw.toLowerCase();
+    const eventSubType = eventSubTypeRaw.toLowerCase();
+
+// allow only Sale or Return in BOTH columns
+    const validEventType =
+        eventType === 'sale' || eventType === 'return';
+
+    const validEventSubType =
+        eventSubType === 'sale' || eventSubType === 'return';
+
+// if either column is not Sale/Return → skip row
+    if (!validEventType || !validEventSubType) {
       continue;
     }
 
-    const isReturn = eventType === 'Return';
+// Return if ANY column says Return
+    const isReturn = eventType === 'return' || eventSubType === 'return';
 
     // Clean SKU
     const rawSku = row['SKU'] || '';
@@ -272,7 +304,9 @@ async function processFlipkartMacros(rawFileBuffer, skuData, stateConfigData, br
     const conversionRate = finalGstRate !== 12 ? 1.18 : 1.12;
 
     // Final Taxable sales value = Final Price after discount / Conversion rate
-    const finalTaxableSalesValue = finalPriceAfterDiscount / conversionRate;
+    // Final Taxable sales value = Final Price after discount / Conversion rate
+    const finalTaxableSalesValue = Math.round(finalPriceAfterDiscount / conversionRate);
+
 
     // Final Shipping Taxable value = Final Shipping Charges / Conversion rate
     const finalShippingTaxableValue = finalShippingCharges / conversionRate;
@@ -670,7 +704,7 @@ async function processFlipkartMacros(rawFileBuffer, skuData, stateConfigData, br
   // 6. source-state
   const sourceStateSheetData = (stateConfigData || []).map(item => ({
     'States': item.States || item.states || '',
-    'Flipkart Pay Ledger': item['Flipkart Pay Ledger'] || item['flipkart pay ledger'] || '',
+    'Flipkart Pay Ledger': item['Amazon Pay Ledger'] || item['amazon pay ledger'] || '',
     'Invoice No.': item['Invoice No.'] || item['Invoice No'] || ''
   }));
   const sourceStateSheet = XLSX.utils.json_to_sheet(sourceStateSheetData);
