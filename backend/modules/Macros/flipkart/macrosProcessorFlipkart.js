@@ -312,8 +312,8 @@ if (stateConfigData && Array.isArray(stateConfigData)) {
     const stateName = normalizeStateName(item.States || item.states);
 
     const ledger =
-      item['Flipkart Pay Ledger'] ||
-      item['Flipkart pay ledger'] ||
+      item['Amazon Pay Ledger'] ||
+      item['Amazon pay ledger'] ||
       '';
 
     console.log('STATE → LEDGER MAP:', stateName, '=>', ledger);

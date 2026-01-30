@@ -12,7 +12,8 @@ const upload = multer({
 });
 
 // Generate Flipkart macros (upload raw file)
-router.post('/generate', upload.fields([ { name: 'rawFile', maxCount: 1 }, { name: 'skuFile', maxCount: 1 } ]), macrosControllerFlipkart.generateMacros );
+router.post('/generate', upload.fields([ { name: 'rawFile', maxCount: 1 },
+   { name: 'skuFile', maxCount: 1 } ]), macrosControllerFlipkart.generateMacros );
 
 // Get files by brandId and sellerPortalId
 router.get('/files/:brandId/:sellerPortalId', macrosControllerFlipkart.getFilesByBrandAndPortal);

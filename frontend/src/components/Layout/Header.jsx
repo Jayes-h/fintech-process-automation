@@ -4,6 +4,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { useBrand } from '../../contexts/BrandContext';
 import Sidebar from './Sidebar';
 import './Header.css';
+import colonelLogo from '../LogoImage/colonel-logo.png';
 
 const Header = ({ children }) => {
   const navigate = useNavigate();
@@ -53,7 +54,11 @@ const Header = ({ children }) => {
             style={{ cursor: 'pointer' }}
             className="fw-bold"
           >
-            <span className="colonel-logo">⚡</span> Colonel Automation Platform
+            <img
+              src={colonelLogo}
+              alt="Colonel Automation Platform"
+              className="colonel-logo"
+            /><span > Colonel Automation Platform</span>
           </Navbar.Brand>
           
           {isBrandSelected && (

@@ -2,6 +2,7 @@ const FlipkartWorkingFile = require('../models/FlipkartWorkingFile');
 const FlipkartPivot = require('../models/FlipkartPivot');
 const FlipkartAfterPivot = require('../models/FlipkartAfterPivot');
 const FlipkartStateConfig = require('../models/FlipkartStateConfig');
+const StateConfig = require('../models/StateConfig');
 const MacrosFiles = require('../models/MacrosFiles');
 const Brands = require('../models/Brands');
 const SellerPortals = require('../models/SellerPortals');
@@ -122,7 +123,6 @@ exports.generateMacros = async (req, res, next) => {
       order: [['salesPortalSku', 'ASC']]
     });
 console.log("with inventoryyyy",withInventory);
-console.log("with inventoryyyy",withInventory === 'false');
     if (withInventory !== 'false' && allSKUs.length === 0) {
       return res.status(400).json({ 
         success: false, 
@@ -139,7 +139,7 @@ console.log("with inventoryyyy",withInventory === 'false');
     // Get Flipkart state config for this brand and seller portal
     let stateConfigData = [];
     try {
-      const stateConfig = await FlipkartStateConfig.findOne({
+      const stateConfig = await StateConfig.findOne({
         where: {
           brandId: brandId,
           sellerPortalId: sellerPortalId
