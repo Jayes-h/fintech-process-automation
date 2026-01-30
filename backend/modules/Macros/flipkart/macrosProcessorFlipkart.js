@@ -283,11 +283,12 @@ function generateTallyReady(pivotRows, fileDate) {
 
 async function processFlipkartMacros(rawFileBuffer, skuData, stateConfigData, brandName, date, withInventory ) {
   console.log('=== FLIPKART MACROS PROCESSING ===');
-  console.log(`Brand: ${brandName}, Date: ${date}`);
+  console.log(`Brand: ${brandName}, Date: ${date}`, "withInventory", withInventory);
 
-  if (withInventory) {
+ 
     // Build SKU lookup map
     const skuMap = {};
+    if (withInventory) {
     if (skuData && Array.isArray(skuData)) {
       for (const item of skuData) {
         const sku = String(item.SKU || item.salesPortalSku || '').trim();
@@ -303,11 +304,8 @@ async function processFlipkartMacros(rawFileBuffer, skuData, stateConfigData, br
 
   // Build state config lookup map (by normalized state name)
 const stateConfigMap = {};
-console.log("state condig dataaaa",stateConfigData);
 if (stateConfigData && Array.isArray(stateConfigData)) {
   for (const item of stateConfigData) {
-    console.log('STATE CONFIG ROW:', item);
-    console.log('AVAILABLE KEYS:', Object.keys(item));
 
     const stateName = normalizeStateName(item.States || item.states);
 
@@ -332,7 +330,6 @@ if (stateConfigData && Array.isArray(stateConfigData)) {
 }
 
   console.log(`State config map loaded with ${Object.keys(stateConfigMap).length} entries`);
-  console.log("State config map",  stateConfigMap);
 
 
 
@@ -389,9 +386,10 @@ if (stateConfigData && Array.isArray(stateConfigData)) {
       // Clean SKU
       const rawSku = row['SKU'] || '';
       const cleanedSku = cleanSKU(rawSku);
-    if (withInventory) {
+
       // Lookup FG from SKU map
       const fg = skuMap[cleanedSku];
+      if (withInventory) {
       if (!fg && cleanedSku) {
         missingSKUs.add(cleanedSku);
       }
@@ -971,7 +969,7 @@ if (stateConfigData && Array.isArray(stateConfigData)) {
       XLSX.utils.json_to_sheet(
           (stateConfigData || []).map(item => ({
             'States': item.States || item.states || '',
-            'Flipkart Pay Ledger': item['Flipkart Pay Ledger'] || item['flipkart pay ledger'] || '',
+            'Flipkart Pay Ledger': item['Amazon Pay Ledger'] || item['amazon pay ledger'] || '',
             'Invoice No.': item['Invoice No.'] || item['Invoice No'] || ''
           }))
       ),

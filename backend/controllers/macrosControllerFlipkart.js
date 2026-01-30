@@ -145,8 +145,7 @@ console.log("with inventoryyyy",withInventory);
           sellerPortalId: sellerPortalId
         }
       });
-      console.log("state config from api",stateConfig);
-      console.log("state config from api",stateConfig.configData);
+      
       if (stateConfig && stateConfig.configData && stateConfig.configData.states) {
         stateConfigData = stateConfig.configData.states;
         console.log(`Found Flipkart state config with ${stateConfigData.length} states`);
@@ -165,7 +164,8 @@ console.log("with inventoryyyy",withInventory);
         skuData,
         stateConfigData,
         brand.name,
-        date
+        date,
+        withInventory
       );
     } catch (error) {
       // Check if error is about missing SKUs
