@@ -1432,7 +1432,8 @@ p['Sum of Final Amount Receivable'] =
       const stateConfig = stateConfigData.find(
         (s) => String(s.States || '').trim() === shipToState
       );
-  
+      console.log("state config from api==",stateConfig);
+      console.log("ship to state==",shipToState);
       if (!stateConfig) {
         console.warn(`⚠ State not found in config: ${shipToState}`);
         continue;
