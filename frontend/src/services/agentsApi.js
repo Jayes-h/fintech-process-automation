@@ -205,6 +205,10 @@ export const macrosApi = {
         fileType === 'B2B'
           ? '/macros-b2b/generate'
           : '/macros/generate';
+    } else if (portalName === 'Myntra') {
+      console.log("myntra");
+      // Myntra needs 3 files - handled separately
+      endpoint = '/macros-myntra/generate';
     } else {
       console.log("flipkart");
       // Flipkart & others (no B2B/B2C logic)
@@ -274,20 +278,36 @@ export const macrosApi = {
     return response.data;
   },
 
-  downloadCombined: async (fileId,portalName) => {
-    if (portalName === 'AMAZON') {
-      const response = await api.get(`/macros/download/combined/${fileId}`, {
+  downloadCombined: async (fileId, portalName, fileType) => {
+    if (portalName === 'Amazon') {
+      if(fileType === 'B2B') {   
+        const response = await api.get(`/macros-b2b/download/combined/${fileId}`, {
+          responseType: 'blob'
+        });
+        return response.data;
+      } else {
+        const response = await api.get(`/macros/download/combined/${fileId}`, {
+          responseType: 'blob'
+        });
+        return response.data;
+      }
+      // const response = await api.get(`/macros/download/combined/${fileId}`, {
+      //   responseType: 'blob'
+      // });
+      // return response.data;
+    } else if (portalName === 'Myntra') {
+      console.log("portal name from download api", portalName);
+      const response = await api.get(`/macros-myntra/download/combined/${fileId}`, {
         responseType: 'blob'
       });
       return response.data;
     } else {
+      console.log("portal name from download api", portalName);
       const response = await api.get(`/macros-flipkart/download/combined/${fileId}`, {
         responseType: 'blob'
       });
       return response.data;
     }
-
-
   },
 
   deleteMacrosFile: async (fileId) => {
@@ -502,6 +522,67 @@ export const stateConfigApi = {
 
   deleteStateConfig: async (id) => {
     const response = await api.delete(`/state-config/${id}`);
+    return response.data;
+  }
+};
+
+export const myntraMacrosApi = {
+  generateMacros: async (
+    rtoFile,
+    packedFile,
+    rtFile,
+    brandId,
+    sellerPortalId,
+    date,
+    withInventory = true
+  ) => {
+    const formData = new FormData();
+    formData.append('rtoFile', rtoFile);
+    formData.append('packedFile', packedFile);
+    formData.append('rtFile', rtFile);
+    formData.append('brandId', brandId);
+    formData.append('sellerPortalId', sellerPortalId);
+    formData.append('date', date);
+    formData.append('withInventory', withInventory.toString());
+    
+    const response = await api.post('/macros-myntra/generate', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data'
+      }
+    });
+    
+    return response.data;
+  },
+
+  getFilesByBrandAndPortal: async (brandId, sellerPortalId) => {
+    const response = await api.get(`/macros-myntra/files/${brandId}/${sellerPortalId}`);
+    return response.data;
+  },
+
+  getWorkingFileData: async (brandId, sellerPortalId, date) => {
+    const response = await api.get(`/macros-myntra/working/${brandId}/${sellerPortalId}/${date}`);
+    return response.data;
+  },
+
+  getPivotData: async (brandId, sellerPortalId, date) => {
+    const response = await api.get(`/macros-myntra/pivot/${brandId}/${sellerPortalId}/${date}`);
+    return response.data;
+  },
+
+  getAfterPivotData: async (brandId, sellerPortalId, date) => {
+    const response = await api.get(`/macros-myntra/after-pivot/${brandId}/${sellerPortalId}/${date}`);
+    return response.data;
+  },
+
+  downloadCombined: async (fileId) => {
+    const response = await api.get(`/macros-myntra/download/combined/${fileId}`, {
+      responseType: 'blob'
+    });
+    return response.data;
+  },
+
+  deleteMacrosFile: async (fileId) => {
+    const response = await api.delete(`/macros-myntra/files/${fileId}`);
     return response.data;
   }
 };

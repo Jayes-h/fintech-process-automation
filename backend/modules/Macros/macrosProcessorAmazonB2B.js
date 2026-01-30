@@ -1346,6 +1346,7 @@ function generatePivot(process1Data, sourceSheet = null, withInventory = true) {
           'Final Invoice No.': normalizeString(row['Final Invoice No.']), // Column AB - from Process 1
           'Ship To State Tally Ledger': normalizeString(row['Ship To State Tally Ledger']), // Column AA - from Process 1
           'FG': normalizeString(row['FG']),
+          'Rate': 0,
           'Sum of Quantity': 0,
           'Sum of Final Taxable Sales Value': 0,
           'Sum of Final CGST Tax': 0,
@@ -1365,6 +1366,7 @@ function generatePivot(process1Data, sourceSheet = null, withInventory = true) {
         pivot[groupKey] = {
           'Seller Gstin': gstin,
           'Sum of Quantity': 0,
+          'Rate': 0,
           'Sum of Final Taxable Sales Value': 0,
           'Sum of Final CGST Tax': 0,
           'Sum of Final SGST Tax': 0,
@@ -1404,6 +1406,22 @@ function generatePivot(process1Data, sourceSheet = null, withInventory = true) {
   // Excel PivotTable in Tabular layout with RepeatAllLabels shows one row per unique group combination
   const pivotRows = Object.values(pivot);
 
+  pivotRows.forEach(row => {
+    const totalTax =
+      safeNumber(row['Sum of Final CGST Tax']) +
+      safeNumber(row['Sum of Final SGST Tax']) +
+      safeNumber(row['Sum of Final IGST Tax']);
+
+    const taxableValue =
+      safeNumber(row['Sum of Final Taxable Sales Value']);
+
+    row['Rate'] =
+      taxableValue > 0
+        ? +(totalTax / taxableValue).toFixed(6)
+        : 0;
+  });
+
+
   // Ensure all pivot rows have the correct column order and all required columns
   // Column order depends on withInventory:
   // With inventory: Seller Gstin, Final Invoice No., Ship To State Tally Ledger, FG, then all Sum columns
@@ -1413,6 +1431,7 @@ function generatePivot(process1Data, sourceSheet = null, withInventory = true) {
     'Final Invoice No.',
     'Ship To State Tally Ledger',
     'FG',
+    'Rate',
     'Sum of Quantity',
     'Sum of Final Taxable Sales Value',
     'Sum of Final CGST Tax',
@@ -1429,6 +1448,7 @@ function generatePivot(process1Data, sourceSheet = null, withInventory = true) {
   ] : [
     'Seller Gstin',
     'Sum of Quantity',
+    'Rate',
     'Sum of Final Taxable Sales Value',
     'Sum of Final CGST Tax',
     'Sum of Final SGST Tax',
@@ -1443,6 +1463,7 @@ function generatePivot(process1Data, sourceSheet = null, withInventory = true) {
     'Sum of Final Amount Receivable'
   ];
 
+  
   // Reorder columns in each pivot row to match the required order
   const orderedPivotRows = pivotRows.map(row => {
     const orderedRow = {};
@@ -1520,6 +1541,169 @@ function generatePivot(process1Data, sourceSheet = null, withInventory = true) {
   return {
     pivotRows: orderedPivotRows,
     validationStats: validationStats
+  };
+}
+
+function generateTallyReady(pivotRows, fileDate) {
+  const GST_SLABS = [0.05, 0.12, 0.18];
+  const GST_TOLERANCE = 0.01; // ±1%
+
+  function normalizeGstRate(rawRate) {
+    if (!rawRate || rawRate <= 0) return 0;
+  
+    // Force numeric
+    const rate = Number(rawRate);
+  
+    // ---------- GST SLAB RANGES ----------
+    if (rate >= 0.04 && rate <= 0.06) return 0.05;
+    if (rate >= 0.11 && rate <= 0.13) return 0.12;
+    if (rate >= 0.17 && rate <= 0.19) return 0.18;
+  
+    // 🚨 Outside expected GST ranges
+    console.warn(`⚠ Unmapped GST rate detected: ${rate}`);
+    return 0;
+  }
+  
+
+   // ---------- SAFE NUMBER ----------
+   const safeNumber = (value) => {
+    if (value === null || value === undefined || value === '') return 0;
+    if (typeof value === 'string') {
+      const cleaned = value.replace(/,/g, '').trim();
+      const num = Number(cleaned);
+      return isNaN(num) ? 0 : num;
+    }
+    const num = Number(value);
+    return isNaN(num) ? 0 : num;
+  };
+
+  // ---------- NORMALIZE GST RATE IN PIVOT ROWS ----------
+  pivotRows.forEach(row => {
+    const rawRate = safeNumber(row['Rate']);
+    row['_NormalizedRate'] = normalizeGstRate(rawRate);
+  });
+
+    // ---------- COLLECT UNIQUE GST RATES ----------
+  const uniqueRatesSet = new Set();
+
+  pivotRows.forEach(row => {
+    const rate = row['_NormalizedRate'];
+    if (rate > 0) {
+      uniqueRatesSet.add(rate);
+    }
+  });
+
+  const uniqueRates = Array.from(uniqueRatesSet).sort((a, b) => a - b);
+
+  // Define headers (including duplicate Discount column)
+  const headers = [
+    'Vch. Date',
+    'Vch. Type',
+    'Vch. No.',
+    'Ref. No.',
+    'Ref. Date',
+    'Party Ledger',
+    'Sales Ledger',
+    'Stock Item',
+    'Quantity',
+    'Rate',
+    'Unit',
+    'Discount',
+    'Amount',
+    'Discount',
+  ];
+
+      // ---------- ADD GST HEADERS PER RATE ----------
+    uniqueRates.forEach(rate => {
+      headers.push(`CGST ${rate / 2}`);
+      headers.push(`SGST ${rate / 2}`);
+      headers.push(`IGST ${rate}`);
+    });
+  const tallyRows = [];
+
+ 
+  // ---------- PARSE FILE DATE ----------
+  // fileDate format: YYYY-MM-DD, convert to Date object
+  let voucherDate;
+
+  if (fileDate) {
+    const parsedDate = new Date(fileDate);
+  
+    if (!isNaN(parsedDate.getTime())) {
+      const year = parsedDate.getFullYear();
+      const month = parsedDate.getMonth(); // 0-based
+  
+      // ✅ Last date of file month
+      voucherDate = new Date(year, month + 1, 0);
+    } else {
+      // fallback
+      voucherDate = new Date();
+    }
+  } else {
+    voucherDate = new Date();
+  }
+
+  // ---------- BUILD TALLY ROWS (as arrays to handle duplicate column names) ----------
+  pivotRows.forEach((row) => {
+    const invoiceNo = row['Final Invoice No.'] || '';
+    const shipToState = row['Ship To State'] || '';
+    const partyLedger = row['Ship To State Tally Ledger'] || 'Amazon Pay Ledger';
+    const stockItem = row['FGoods'] || '';
+    const quantity = safeNumber(row['Sum of Quantity']);
+    const amount = safeNumber(row['Sum of Final Taxable Sales Value']);
+    const rate = row['_NormalizedRate'];  // ✅
+
+    const cgst = safeNumber(row['Sum of Final CGST Tax']);
+    const sgst = safeNumber(row['Sum of Final SGST Tax']);
+    const igst = safeNumber(row['Sum of Final IGST Tax']);
+    
+
+    // Skip rows without invoice number
+    if (!invoiceNo) {
+      console.warn(`⚠ Skipping tally row: Missing Invoice No. for state: ${shipToState}`);
+      return;
+    }
+
+    // Build row as array in exact order of headers
+    const rowArray = [
+      voucherDate,           // Vch. Date
+      shipToState,           // Vch. Type
+      invoiceNo,             // Vch. No.
+      invoiceNo,             // Ref. No. (using invoice no)
+      voucherDate,           // Ref. Date
+      partyLedger,           // Party Ledger
+      'Amazon Pay Ledger',   // Sales Ledger
+      stockItem,             // Stock Item
+      quantity,              // Quantity
+      rate,                  // Rate
+      '',                    // Unit (user will add)
+      '',                    // Discount (first)
+      amount,                // Amount
+      '',                    // Discount (second)
+    ];
+
+    // ---------- GST VALUES PER RATE ----------
+  uniqueRates.forEach(r => {
+    if (r === rate) {
+      rowArray.push(cgst); // CGST r/2
+      rowArray.push(sgst); // SGST r/2
+      rowArray.push(igst); // IGST r
+    } else {
+      rowArray.push(0);
+      rowArray.push(0);
+      rowArray.push(0);
+    }
+  });
+
+    tallyRows.push(rowArray);
+  });
+
+  console.log(`✓ Generated ${tallyRows.length} tally ready rows from ${pivotRows.length} pivot rows`);
+
+  // Return as array of arrays format for aoa_to_sheet
+  return {
+    headers: headers,
+    data: tallyRows
   };
 }
 
@@ -1922,11 +2106,23 @@ async function processMacrosB2B(rawFileBuffer, skuFileBuffer, brandName, date, s
     
     const pivotSheet = XLSX.utils.json_to_sheet(pivotData);
     
-    XLSX.utils.book_append_sheet(outputWorkbook, pivotSheet, 'amazon-b2c-pivot');
+    XLSX.utils.book_append_sheet(outputWorkbook, pivotSheet, 'amazon-b2b-pivot');
     
     // Report1 is same as Pivot but values only
     const report1Sheet = XLSX.utils.json_to_sheet(pivotData);
     XLSX.utils.book_append_sheet(outputWorkbook, report1Sheet, 'Report1');
+
+        // ============================================================
+    // STEP 5.5: CREATE TALLY READY SHEET
+    // ============================================================
+    console.log('Step 5.5: Create Tally Ready sheet');
+    const tallyReadyResult = generateTallyReady(pivotData, date);
+    // Build array of arrays: [headers, ...dataRows]
+    const tallyReadySheetData = [tallyReadyResult.headers, ...tallyReadyResult.data];
+    const tallyReadySheet = XLSX.utils.aoa_to_sheet(tallyReadySheetData);
+    XLSX.utils.book_append_sheet(outputWorkbook, tallyReadySheet, 'tally ready');
+    console.log(`✓ Added tally ready sheet with ${tallyReadyResult.data.length} rows`);
+
 
     // ============================================================
     // STEP 6: ADD AMAZON-B2B-PROCESS1 SHEET TO OUTPUT WORKBOOK

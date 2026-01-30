@@ -1,12 +1,13 @@
-const FlipkartWorkingFile = require('../models/FlipkartWorkingFile');
-const FlipkartPivot = require('../models/FlipkartPivot');
-const FlipkartAfterPivot = require('../models/FlipkartAfterPivot');
-const FlipkartStateConfig = require('../models/FlipkartStateConfig');
+const MyntraWorkingFile = require('../models/MyntraWorkingFile');
+const MyntraPivot = require('../models/MyntraPivot');
+const MyntraAfterPivot = require('../models/MyntraAfterPivot');
+const MyntraStateConfig = require('../models/MyntraStateConfig');
+const StateConfig = require('../models/StateConfig');
 const MacrosFiles = require('../models/MacrosFiles');
 const Brands = require('../models/Brands');
 const SellerPortals = require('../models/SellerPortals');
 const SKU = require('../models/SKU');
-const { processFlipkartMacros } = require('../modules/Macros/flipkart/macrosProcessorFlipkart');
+const { processMyntraMacros } = require('../modules/Macros/myntra/macrosProcessorMyntra');
 const XLSX = require('xlsx-js-style');
 const path = require('path');
 const fs = require('fs').promises;
@@ -28,19 +29,31 @@ async function ensureDirectories() {
 ensureDirectories();
 
 /**
- * Generate Flipkart macros - Upload raw file and process
- * POST /api/macros-flipkart/generate
+ * Generate Myntra macros - Upload 3 CSV files and process
+ * POST /api/macros-myntra/generate
  */
 exports.generateMacros = async (req, res, next) => {
   try {
-    console.log('=== FLIPKART MACROS GENERATE REQUEST ===');
+    console.log('=== MYNTRA MACROS GENERATE REQUEST ===');
     console.log('Body:', req.body);
     console.log('Files:', req.files ? Object.keys(req.files) : 'No files');
     
-    if (!req.files || !req.files.rawFile) {
+    // Check for 3 required files
+    if (!req.files) {
       return res.status(400).json({ 
         success: false, 
-        message: 'Raw file is required' 
+        message: 'Files are required' 
+      });
+    }
+
+    const rtoFile = req.files.rtoFile ? req.files.rtoFile[0] : null;
+    const packedFile = req.files.packedFile ? req.files.packedFile[0] : null;
+    const rtFile = req.files.rtFile ? req.files.rtFile[0] : null;
+
+    if (!rtoFile || !packedFile || !rtFile) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'All three files are required: rtoFile, packedFile, and rtFile' 
       });
     }
 
@@ -86,90 +99,122 @@ exports.generateMacros = async (req, res, next) => {
 
     const sellerPortalName = sellerPortal.name;
 
-    const rawFile = req.files.rawFile[0];
-
-    // Validate file buffer exists
-    if (!rawFile.buffer || rawFile.buffer.length === 0) {
+    // Validate file buffers exist
+    if (!rtoFile.buffer || rtoFile.buffer.length === 0) {
       return res.status(400).json({ 
         success: false, 
-        message: 'Raw file buffer is empty or corrupted' 
+        message: 'RTO file buffer is empty or corrupted' 
       });
     }
 
-    // Validate file types (Excel and CSV)
+    if (!packedFile.buffer || packedFile.buffer.length === 0) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Packed file buffer is empty or corrupted' 
+      });
+    }
+
+    if (!rtFile.buffer || rtFile.buffer.length === 0) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'RT file buffer is empty or corrupted' 
+      });
+    }
+
+    // Validate file types (CSV)
     const allowedMimeTypes = [
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      'application/vnd.ms-excel',
       'text/csv',
       'application/csv',
       'text/plain',
+      'application/vnd.ms-excel',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       'application/octet-stream'
     ];
 
-    if (!allowedMimeTypes.includes(rawFile.mimetype)) {
+    const validateFileType = (file, fileName) => {
+      if (!allowedMimeTypes.includes(file.mimetype)) {
+        throw new Error(`${fileName} must be a CSV file. Received: ${file.mimetype}`);
+      }
+    };
+
+    try {
+      validateFileType(rtoFile, 'RTO file');
+      validateFileType(packedFile, 'Packed file');
+      validateFileType(rtFile, 'RT file');
+    } catch (error) {
       return res.status(400).json({ 
         success: false, 
-        message: `Raw file must be an Excel or CSV file. Received: ${rawFile.mimetype}` 
+        message: error.message 
       });
     }
 
+    const withInventoryFlag = withInventory !== 'false' && withInventory !== false;
+    
     // Get all SKUs for this brand and seller portal
-    const allSKUs = await SKU.findAll({
-      where: {
-        brandId: brandId,
-        salesPortalId: sellerPortalId
-      },
-      order: [['salesPortalSku', 'ASC']]
-    });
-console.log("with inventoryyyy",withInventory);
-console.log("with inventoryyyy",withInventory === 'false');
-    if (withInventory !== 'false' && allSKUs.length === 0) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'No SKUs found for this brand and seller portal. Please add SKUs first.' 
-      });
+    let skuData = [];
+    if (withInventoryFlag) {
+      try {
+        const allSKUs = await SKU.findAll({
+          where: {
+            brandId: brandId,
+            salesPortalId: sellerPortalId
+          },
+          order: [['salesPortalSku', 'ASC']]
+        });
+
+        // Build SKU data array
+        skuData = allSKUs.map(sku => ({
+          SKU: sku.salesPortalSku,
+          FG: sku.tallyNewSku,
+          sku_id: sku.salesPortalSku,
+          salesPortalSku: sku.salesPortalSku,
+          tallyNewSku: sku.tallyNewSku
+        }));
+        console.log(`Found ${skuData.length} SKUs for brand ${brandId} and portal ${sellerPortalId}`);
+      } catch (skuError) {
+        console.warn('Error fetching SKUs:', skuError.message);
+        // Continue without SKUs if error occurs
+      }
     }
 
-    // Build SKU data array
-    const skuData = allSKUs.map(sku => ({
-      SKU: sku.salesPortalSku,
-      FG: sku.tallyNewSku
-    }));
-
-    // Get Flipkart state config for this brand and seller portal
+    // Get Myntra state config for this brand and seller portal
     let stateConfigData = [];
     try {
-      const stateConfig = await FlipkartStateConfig.findOne({
+      const stateConfig = await StateConfig.findOne({
         where: {
           brandId: brandId,
           sellerPortalId: sellerPortalId
         }
       });
-      console.log("state config from api",stateConfig);
-      console.log("state config from api",stateConfig.configData);
+      
       if (stateConfig && stateConfig.configData && stateConfig.configData.states) {
         stateConfigData = stateConfig.configData.states;
-        console.log(`Found Flipkart state config with ${stateConfigData.length} states`);
+        console.log(`Found Myntra state config with ${stateConfigData.length} states`);
       } else {
-        console.log('No Flipkart state config found for this brand and seller portal');
+        console.log('No Myntra state config found for this brand and seller portal');
       }
     } catch (stateConfigError) {
-      console.warn('Error fetching Flipkart state config:', stateConfigError.message);
+      console.warn('Error fetching Myntra state config:', stateConfigError.message);
     }
 
-    // Process Flipkart macros
+    // Process Myntra macros
     let result;
     try {
-      result = await processFlipkartMacros(
-        rawFile.buffer,
+      result = await processMyntraMacros(
+        {
+          rtoFile: rtoFile.buffer,
+          packedFile: packedFile.buffer,
+          rtFile: rtFile.buffer
+        },
         skuData,
         stateConfigData,
         brand.name,
-        date
+        date,
+        withInventoryFlag
       );
     } catch (error) {
       // Check if error is about missing SKUs
-      if (error.missingSKUs) {
+      if (withInventory && error.missingSKUs) {
         return res.status(400).json({
           success: false,
           message: error.message || 'Some SKUs are missing from the database',
@@ -181,7 +226,7 @@ console.log("with inventoryyyy",withInventory === 'false');
     }
 
     // Save output file
-    const outputFileName = `Flipkart-${brand.name}-${date}-${uuidv4()}.xlsx`;
+    const outputFileName = `Myntra-${brand.name}-${date}-${uuidv4()}.xlsx`;
     const outputFilePath = path.join(OUTPUT_DIR, outputFileName);
 
     // Write XLSX workbook to file
@@ -195,7 +240,7 @@ console.log("with inventoryyyy",withInventory === 'false');
       date: date,
       ...row
     }));
-    await FlipkartWorkingFile.bulkCreate(workingRecords);
+    await MyntraWorkingFile.bulkCreate(workingRecords);
     console.log(`Saved ${workingRecords.length} working file records to database`);
 
     // Save pivot data to database
@@ -205,7 +250,7 @@ console.log("with inventoryyyy",withInventory === 'false');
       date: date,
       ...row
     }));
-    await FlipkartPivot.bulkCreate(pivotRecords);
+    await MyntraPivot.bulkCreate(pivotRecords);
     console.log(`Saved ${pivotRecords.length} pivot records to database`);
 
     // Save after-pivot data to database
@@ -215,7 +260,7 @@ console.log("with inventoryyyy",withInventory === 'false');
       date: date,
       ...row
     }));
-    await FlipkartAfterPivot.bulkCreate(afterPivotRecords);
+    await MyntraAfterPivot.bulkCreate(afterPivotRecords);
     console.log(`Saved ${afterPivotRecords.length} after-pivot records to database`);
 
     // Save file metadata to macros_files table
@@ -229,12 +274,12 @@ console.log("with inventoryyyy",withInventory === 'false');
       pivot_file_path: null, // Combined file
       process1_record_count: workingRecords.length,
       pivot_record_count: pivotRecords.length,
-      fileType: 'FLIPKART'
+      fileType: 'MYNTRA'
     });
 
     res.status(201).json({
       success: true,
-      message: 'Flipkart macros generated successfully',
+      message: 'Myntra macros generated successfully',
       data: {
         id: macrosFile.id,
         brandId: brandId,
@@ -246,23 +291,23 @@ console.log("with inventoryyyy",withInventory === 'false');
         pivotRecordCount: pivotRecords.length,
         afterPivotRecordCount: afterPivotRecords.length,
         outputFile: outputFileName,
-        fileType: 'FLIPKART'
+        fileType: 'MYNTRA'
       }
     });
   } catch (error) {
-    console.error('Flipkart macros generation error:', error);
+    console.error('Myntra macros generation error:', error);
     next(error);
   }
 };
 
 /**
- * Download combined Flipkart macros file
- * GET /api/macros-flipkart/download/combined/:id
+ * Download combined Myntra macros file
+ * GET /api/macros-myntra/download/combined/:id
  */
 exports.downloadCombined = async (req, res, next) => {
   try {
     const { id } = req.params;
-    console.log('Download Flipkart combined file requested for ID:', id);
+    console.log('Download Myntra combined file requested for ID:', id);
     
     const macrosFile = await MacrosFiles.findByPk(id);
 
@@ -275,10 +320,10 @@ exports.downloadCombined = async (req, res, next) => {
     }
 
     if (!macrosFile.process1_file_path) {
-      console.log('Flipkart file path is null for ID:', id);
+      console.log('Myntra file path is null for ID:', id);
       return res.status(404).json({
         success: false,
-        message: 'Flipkart file path not found'
+        message: 'Myntra file path not found'
       });
     }
 
@@ -301,7 +346,7 @@ exports.downloadCombined = async (req, res, next) => {
       
       const brand = await Brands.findByPk(macrosFile.brandId);
       const brandName = brand ? brand.name : 'Unknown';
-      const fileName = `Flipkart-${brandName}-${macrosFile.date}.xlsx`;
+      const fileName = `Myntra-${brandName}-${macrosFile.date}.xlsx`;
       
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
       res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
@@ -309,21 +354,21 @@ exports.downloadCombined = async (req, res, next) => {
       res.send(fileBuffer);
       console.log('File sent successfully');
     } catch (readError) {
-      console.error('Error reading Flipkart file:', readError);
+      console.error('Error reading Myntra file:', readError);
       return res.status(500).json({
         success: false,
         message: `Failed to read file: ${readError.message}. File path: ${filePath}`
       });
     }
   } catch (error) {
-    console.error('Download Flipkart combined error:', error);
+    console.error('Download Myntra combined error:', error);
     next(error);
   }
 };
 
 /**
- * Get Flipkart files by brandId and sellerPortalId
- * GET /api/macros-flipkart/files/:brandId/:sellerPortalId
+ * Get Myntra files by brandId and sellerPortalId
+ * GET /api/macros-myntra/files/:brandId/:sellerPortalId
  */
 exports.getFilesByBrandAndPortal = async (req, res, next) => {
   try {
@@ -333,7 +378,7 @@ exports.getFilesByBrandAndPortal = async (req, res, next) => {
       where: { 
         brandId,
         sellerPortalId,
-        fileType: 'FLIPKART'
+        fileType: 'MYNTRA'
       },
       include: [
         { model: Brands, as: 'brand', attributes: ['id', 'name'] },
@@ -366,13 +411,13 @@ exports.getFilesByBrandAndPortal = async (req, res, next) => {
 };
 
 /**
- * Delete Flipkart macros file
- * DELETE /api/macros-flipkart/files/:id
+ * Delete Myntra macros file
+ * DELETE /api/macros-myntra/files/:id
  */
 exports.deleteMacrosFile = async (req, res, next) => {
   try {
     const { id } = req.params;
-    console.log('Delete Flipkart macros file requested for ID:', id);
+    console.log('Delete Myntra macros file requested for ID:', id);
     
     const macrosFile = await MacrosFiles.findByPk(id);
 
@@ -402,23 +447,23 @@ exports.deleteMacrosFile = async (req, res, next) => {
 
     res.json({
       success: true,
-      message: 'Flipkart macros file deleted successfully'
+      message: 'Myntra macros file deleted successfully'
     });
   } catch (error) {
-    console.error('Delete Flipkart macros file error:', error);
+    console.error('Delete Myntra macros file error:', error);
     next(error);
   }
 };
 
 /**
- * Get Flipkart working file data
- * GET /api/macros-flipkart/working/:brandId/:sellerPortalId/:date
+ * Get Myntra working file data
+ * GET /api/macros-myntra/working/:brandId/:sellerPortalId/:date
  */
 exports.getWorkingFileData = async (req, res, next) => {
   try {
     const { brandId, sellerPortalId, date } = req.params;
     
-    const data = await FlipkartWorkingFile.findAll({
+    const data = await MyntraWorkingFile.findAll({
       where: { 
         brandId,
         sellerPortalId,
@@ -438,14 +483,14 @@ exports.getWorkingFileData = async (req, res, next) => {
 };
 
 /**
- * Get Flipkart pivot data
- * GET /api/macros-flipkart/pivot/:brandId/:sellerPortalId/:date
+ * Get Myntra pivot data
+ * GET /api/macros-myntra/pivot/:brandId/:sellerPortalId/:date
  */
 exports.getPivotData = async (req, res, next) => {
   try {
     const { brandId, sellerPortalId, date } = req.params;
     
-    const data = await FlipkartPivot.findAll({
+    const data = await MyntraPivot.findAll({
       where: { 
         brandId,
         sellerPortalId,
@@ -464,14 +509,14 @@ exports.getPivotData = async (req, res, next) => {
 };
 
 /**
- * Get Flipkart after-pivot data
- * GET /api/macros-flipkart/after-pivot/:brandId/:sellerPortalId/:date
+ * Get Myntra after-pivot data
+ * GET /api/macros-myntra/after-pivot/:brandId/:sellerPortalId/:date
  */
 exports.getAfterPivotData = async (req, res, next) => {
   try {
     const { brandId, sellerPortalId, date } = req.params;
     
-    const data = await FlipkartAfterPivot.findAll({
+    const data = await MyntraAfterPivot.findAll({
       where: { 
         brandId,
         sellerPortalId,
@@ -488,7 +533,3 @@ exports.getAfterPivotData = async (req, res, next) => {
     next(error);
   }
 };
-
-
-
-

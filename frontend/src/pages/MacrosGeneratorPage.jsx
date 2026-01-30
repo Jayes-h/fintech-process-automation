@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Container, Button, Card, Alert, Spinner, Row, Col, Form, Modal, Table, Badge, Tabs, Tab } from 'react-bootstrap';
-import { macrosApi, brandsApi, sellerPortalsApi, skuApi, stateConfigApi } from '../services/agentsApi';
+import { macrosApi, myntraMacrosApi, brandsApi, sellerPortalsApi, skuApi, stateConfigApi } from '../services/agentsApi';
 import { useBrand } from '../contexts/BrandContext';
 import { validateFileType, validateFileSize, downloadBlob } from '../utils/fileHelpers';
 import './MacrosGeneratorPage.css';
@@ -14,15 +14,15 @@ const MacrosGeneratorPage = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
-  
+
   const [sellerPortals, setSellerPortals] = useState([]);
   const [loadingPortals, setLoadingPortals] = useState(true);
-  
+
   // Files dashboard state
   const [showFilesDashboard, setShowFilesDashboard] = useState(false);
   const [portalFiles, setPortalFiles] = useState([]);
   const [loadingFiles, setLoadingFiles] = useState(false);
-  
+
   // Modals state
   const [showEditPortalModal, setShowEditPortalModal] = useState(false);
   const [showSKUModal, setShowSKUModal] = useState(false);
@@ -31,70 +31,87 @@ const MacrosGeneratorPage = () => {
   const [showCreateStateConfigModal, setShowCreateStateConfigModal] = useState(false);
   const [showCreateFileModal, setShowCreateFileModal] = useState(false);
   const [showMissingSKUModal, setShowMissingSKUModal] = useState(false);
-  
+
   // Missing SKU state
   const [missingSKUs, setMissingSKUs] = useState([]);
   const [missingSKUData, setMissingSKUData] = useState({}); // { skuId: tallyNewSku }
   const [addingMissingSKUs, setAddingMissingSKUs] = useState(false);
-  
+
   // Selected portal for operations
   const [selectedPortal, setSelectedPortal] = useState(null);
-  
+  console.log('Selected Portal:', selectedPortal);
   // Create file form state
   const [rawFile, setRawFile] = useState(null);
+  // Myntra specific: 3 files
+  const [rtoFile, setRtoFile] = useState(null);
+  const [packedFile, setPackedFile] = useState(null);
+  const [rtFile, setRtFile] = useState(null);
   const [fileType, setFileType] = useState('');
   const [withInventory, setWithInventory] = useState(true); // Default to with inventory
-  
+
   // Filter state for Amazon files
   const [monthFilter, setMonthFilter] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
-  
+
   // Month names array
   const months = [
     'January', 'February', 'March', 'April', 'May', 'June',
     'July', 'August', 'September', 'October', 'November', 'December'
   ];
-  
+
   // Generate years (current year ± 5 years)
   const currentYear = new Date().getFullYear();
   const years = Array.from({ length: 11 }, (_, i) => currentYear - 5 + i);
-  
+
   // Calculate default month (previous month) and year (current year)
   const getDefaultMonth = () => {
     const now = new Date();
     const previousMonthIndex = now.getMonth() === 0 ? 11 : now.getMonth() - 1;
     return months[previousMonthIndex];
   };
-  
+
   const getDefaultYear = () => {
     return currentYear.toString();
   };
-  
+
   const [month, setMonth] = useState(getDefaultMonth());
   const [year, setYear] = useState(getDefaultYear());
-  
+
   // Check if selected portal is Amazon
   const isAmazonPortal = () => {
     const portalName = selectedPortal?.name || selectedPortal?.sellerPortalName || '';
     return portalName.toLowerCase() === 'amazon';
   };
-  
+
+  // Check if selected portal is Flipkart
+  const isFlipkartPortal = () => {
+    const portalName = selectedPortal?.name || selectedPortal?.sellerPortalName || '';
+    return portalName.toLowerCase() === 'flipkart';
+  };
+
+  const isMyntraPortal = () => {
+    const portalName = selectedPortal?.name || selectedPortal?.sellerPortalName || '';
+    return portalName.toLowerCase() === 'myntra';
+      
+  };
+
+
   // SKU data
   const [skus, setSkus] = useState([]);
   const [loadingSKUs, setLoadingSKUs] = useState(false);
   const [skuSearchQuery, setSkuSearchQuery] = useState('');
-  
+
   // State config data
   const [stateConfig, setStateConfig] = useState(null);
   const [loadingStateConfig, setLoadingStateConfig] = useState(false);
-  
+
   // Edit portal form
   const [editPortalName, setEditPortalName] = useState('');
-  
+
   // Create SKU form
   const [newSKU, setNewSKU] = useState({ salesPortalSku: '', tallyNewSku: '' });
   const [uploadSKUFile, setUploadSKUFile] = useState(null);
-  
+
   // State config form
   const [stateConfigData, setStateConfigData] = useState('{}');
   const [stateConfigFile, setStateConfigFile] = useState(null);
@@ -169,11 +186,11 @@ const MacrosGeneratorPage = () => {
     }
   };
 
-  const handleDownloadCombined = async (fileId, portalName, date) => {
+  const handleDownloadCombined = async (fileId, portalName, date, fileType) => {
     try {
       setLoading(true);
       setError(null);
-      const blob = await macrosApi.downloadCombined(fileId,portalName);
+      const blob = await macrosApi.downloadCombined(fileId,portalName, fileType);
       if (!blob || blob.size === 0) {
         throw new Error('Received empty file');
       }
@@ -210,9 +227,17 @@ const MacrosGeneratorPage = () => {
   const handleCreateNewFile = (portal) => {
     setSelectedPortal(portal);
     setRawFile(null);
+    // Reset Myntra files
+    setRtoFile(null);
+    setPackedFile(null);
+    setRtFile(null);
     setMonth(getDefaultMonth());
     setYear(getDefaultYear());
     setShowCreateFileModal(true);
+    if(portal.name === 'Myntra'){
+      setWithInventory(false);
+    console.log("withInventory =====>",withInventory);
+    }
   };
 
   const handleRawFileChange = (event) => {
@@ -233,10 +258,86 @@ const MacrosGeneratorPage = () => {
     setError(null);
   };
 
-  const handleGenerateFile = async () => {
-    if (!rawFile) {
-      setError('Raw file is required');
+  // Myntra file handlers
+  const handleRtoFileChange = (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    // Check file extension for CSV or Excel
+    const fileName = file.name.toLowerCase();
+    const isValidExtension = fileName.endsWith('.csv') || fileName.endsWith('.xlsx') || fileName.endsWith('.xls');
+    
+    if (!isValidExtension && !validateFileType(file)) {
+      setError('RTO file must be a CSV or Excel file (.csv, .xlsx, .xls)');
       return;
+    }
+
+    if (!validateFileSize(file, 50)) {
+      setError('RTO file size exceeds 50MB limit');
+      return;
+    }
+
+    setRtoFile(file);
+    setError(null);
+  };
+
+  const handlePackedFileChange = (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    // Check file extension for CSV or Excel
+    const fileName = file.name.toLowerCase();
+    const isValidExtension = fileName.endsWith('.csv') || fileName.endsWith('.xlsx') || fileName.endsWith('.xls');
+    
+    if (!isValidExtension && !validateFileType(file)) {
+      setError('Packed file must be a CSV or Excel file (.csv, .xlsx, .xls)');
+      return;
+    }
+
+    if (!validateFileSize(file, 50)) {
+      setError('Packed file size exceeds 50MB limit');
+      return;
+    }
+
+    setPackedFile(file);
+    setError(null);
+  };
+
+  const handleRtFileChange = (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    // Check file extension for CSV or Excel
+    const fileName = file.name.toLowerCase();
+    const isValidExtension = fileName.endsWith('.csv') || fileName.endsWith('.xlsx') || fileName.endsWith('.xls');
+    
+    if (!isValidExtension && !validateFileType(file)) {
+      setError('RT file must be a CSV or Excel file (.csv, .xlsx, .xls)');
+      return;
+    }
+
+    if (!validateFileSize(file, 50)) {
+      setError('RT file size exceeds 50MB limit');
+      return;
+    }
+
+    setRtFile(file);
+    setError(null);
+  };
+
+  const handleGenerateFile = async () => {
+    // Myntra requires 3 files
+    if (isMyntraPortal()) {
+     
+      if (!rtoFile || !packedFile || !rtFile) {
+        setError('All three files are required for Myntra: GSTR Report RTO, GSTR Report Packed, and GSTR Report RT');
+        return;
+      }
+    } else {
+      if (!rawFile) {
+        setError('Raw file is required');
+        return;
+      }
     }
 
     if (!month || !year) {
@@ -260,7 +361,7 @@ const MacrosGeneratorPage = () => {
 
       // Check if SKUs exist - ONLY if withInventory is true
       // Skip SKU check completely when without inventory is selected
-      if (withInventory) {
+      if (withInventory ) {
         try {
           const skuCheckResponse = await skuApi.getAllSKUs(brandId, portalId);
           if (!skuCheckResponse.success || !skuCheckResponse.data || skuCheckResponse.data.length === 0) {
@@ -277,11 +378,36 @@ const MacrosGeneratorPage = () => {
         console.log('Skipping SKU check (withInventory=false)');
       }
 
-      const response = await macrosApi.generateMacros(rawFile, brandId, portalId, date, fileType || null, withInventory);
+      let response;
       
+      // Handle Myntra separately with 3 files
+      if (isMyntraPortal()) {
+        response = await myntraMacrosApi.generateMacros(
+          rtoFile,
+          packedFile,
+          rtFile,
+          brandId,
+          portalId,
+          date,
+          withInventory
+        );
+      } else {
+        response = await macrosApi.generateMacros(rawFile, brandId, portalId, date, fileType || null, withInventory);
+      }
+
       if (response.success) {
-        setSuccess(`Macros generated successfully! Processed ${response.data.process1RecordCount} Amazon B2C Process1 records and ${response.data.pivotRecordCount} Amazon B2C Pivot records.`);
-        setRawFile(null);
+        const recordCount = response.data.workingRecordCount || response.data.process1RecordCount || 0;
+        const pivotCount = response.data.pivotRecordCount || 0;
+        setSuccess(`Macros generated successfully! Processed ${recordCount} working records and ${pivotCount} pivot records.`);
+        
+        // Reset form
+        if (isMyntraPortal()) {
+          setRtoFile(null);
+          setPackedFile(null);
+          setRtFile(null);
+        } else {
+          setRawFile(null);
+        }
         setFileType('');
         setWithInventory(true); // Reset to default
         setMonth(getDefaultMonth());
@@ -294,7 +420,7 @@ const MacrosGeneratorPage = () => {
       // Skip missing SKU handling when without inventory is selected
       const errorData = err.response?.data || {};
       const errorMessage = errorData.message || err.message || '';
-      
+
       // Only handle missing SKU errors if withInventory is true
       if (withInventory) {
         // First check if missingSKUs array is directly in the response
@@ -309,21 +435,21 @@ const MacrosGeneratorPage = () => {
           setMissingSKUData(initialData);
           setShowMissingSKUModal(true);
           setError(`Missing SKUs detected: ${missingSKUList.join(', ')}. Please add them to continue.`);
-        } 
+        }
         // Check if error message contains "missing from the database" or "missing SKUs"
         else if (errorMessage && (errorMessage.includes('missing from the database') || errorMessage.includes('missing SKUs') || errorMessage.includes('SKUs are missing'))) {
           // Try to extract SKU IDs from error message
           // Pattern: "Some SKUs are missing from the database: SKU1, SKU2, SKU3"
           // or "Failed to process macros: Some SKUs are missing from the database: SKU1, SKU2, SKU3"
           let missingSKUList = [];
-          
+
           // Try multiple patterns to extract SKUs
           const patterns = [
             /:\s*([^,]+(?:,\s*[^,]+)*)$/,  // Match everything after last colon
             /missing.*?:\s*([^,]+(?:,\s*[^,]+)*)/i,  // Match after "missing" keyword
             /SKUs?\s+(?:are\s+)?missing[^:]*:\s*([^,]+(?:,\s*[^,]+)*)/i  // More specific pattern
           ];
-          
+
           for (const pattern of patterns) {
             const match = errorMessage.match(pattern);
             if (match && match[1]) {
@@ -331,7 +457,7 @@ const MacrosGeneratorPage = () => {
               if (missingSKUList.length > 0) break;
             }
           }
-          
+
           if (missingSKUList.length > 0) {
             setMissingSKUs(missingSKUList);
             const initialData = {};
@@ -408,24 +534,48 @@ const MacrosGeneratorPage = () => {
 
       if (createdSKUs.length > 0) {
         setSuccess(`Successfully added ${createdSKUs.length} SKU(s). Retrying macros generation...`);
-        
+
         // Reset missing SKU data
         setMissingSKUData({});
         setMissingSKUs([]);
         setShowMissingSKUModal(false);
-        
+
         // Small delay to ensure SKUs are saved, then retry generation
         setTimeout(async () => {
           try {
             setLoading(true);
             setError(null);
             setSuccess(null);
-            
-            const response = await macrosApi.generateMacros(rawFile, brandId, portalId, date, fileType || null, withInventory);
-            
+
+            let response;
+            // Handle Myntra separately with 3 files
+            if (isMyntraPortal()) {
+              response = await myntraMacrosApi.generateMacros(
+                rtoFile,
+                packedFile,
+                rtFile,
+                brandId,
+                portalId,
+                date,
+                withInventory
+              );
+            } else {
+              response = await macrosApi.generateMacros(rawFile, brandId, portalId, date, fileType || null, withInventory);
+            }
+
             if (response.success) {
-              setSuccess(`Macros generated successfully! Processed ${response.data.process1RecordCount} Amazon B2C Process1 records and ${response.data.pivotRecordCount} Amazon B2C Pivot records.`);
-              setRawFile(null);
+              const recordCount = response.data.workingRecordCount || response.data.process1RecordCount || 0;
+              const pivotCount = response.data.pivotRecordCount || 0;
+              setSuccess(`Macros generated successfully! Processed ${recordCount} working records and ${pivotCount} pivot records.`);
+              
+              // Reset form
+              if (isMyntraPortal()) {
+                setRtoFile(null);
+                setPackedFile(null);
+                setRtFile(null);
+              } else {
+                setRawFile(null);
+              }
               setFileType('');
               setWithInventory(true); // Reset to default
               setMonth(getDefaultMonth());
@@ -601,7 +751,7 @@ const MacrosGeneratorPage = () => {
       if (response.data && response.data.configData) {
         const configData = response.data.configData;
         setStateConfigData(JSON.stringify(configData, null, 2));
-        
+
         // Parse configData for table display
         // Handle both formats: { states: [...] } or direct array
         let tableData = [];
@@ -621,7 +771,7 @@ const MacrosGeneratorPage = () => {
             }
           }
         }
-        
+
         setStateConfigTableData(tableData);
       } else {
         setStateConfigData('{}');
@@ -655,13 +805,13 @@ const MacrosGeneratorPage = () => {
         'application/vnd.ms-excel', // .xls
         'text/csv' // .csv
       ];
-      
+
       if (!validTypes.includes(file.type) && !file.name.match(/\.(xlsx|xls|csv)$/i)) {
         setError('Please upload a valid Excel file (.xlsx, .xls) or CSV file');
         setStateConfigFile(null);
         return;
       }
-      
+
       setStateConfigFile(file);
       setError(null);
     }
@@ -802,10 +952,10 @@ const MacrosGeneratorPage = () => {
             {sellerPortals.map((portal) => {
               const portalId = portal.id || portal.sellerPortalId;
               const portalName = portal.name || portal.sellerPortalName;
-              
+
               return (
                 <Col key={portalId} xs={12} sm={6} md={4} lg={3}>
-                  <Card 
+                  <Card
                     className="h-100 seller-portal-card"
                     style={{ cursor: 'pointer' }}
                     onClick={() => handlePortalCardClick(portal)}
@@ -971,7 +1121,7 @@ const MacrosGeneratorPage = () => {
                 )}
               </div>
             )}
-            
+
             {loadingFiles ? (
               <div className="text-center py-4">
                 <Spinner animation="border" variant="primary" />
@@ -992,7 +1142,7 @@ const MacrosGeneratorPage = () => {
                     return matchesMonth && matchesType;
                   })
                 : portalFiles;
-              
+
               return filteredFiles.length === 0 ? (
                 <Alert variant="info" className="text-center">
                   No files match your filter criteria.
@@ -1012,8 +1162,8 @@ const MacrosGeneratorPage = () => {
                               )}
                               <br />
                               <small className="text-muted">
-                                Amazon B2C Process1 Records: {file.process1RecordCount || 0} | 
-                                Amazon B2C Pivot Records: {file.pivotRecordCount || 0}
+                                {selectedPortal?.name} working Records: {file.process1RecordCount || 0} |
+                                {selectedPortal?.name} pivot Records: {file.pivotRecordCount || 0}
                                 <br />
                                 Created: {new Date(file.createdAt).toLocaleString()}
                               </small>
@@ -1022,7 +1172,7 @@ const MacrosGeneratorPage = () => {
                               <Button
                                 variant="primary"
                                 size="sm"
-                                onClick={(e) => { e.stopPropagation(); handleDownloadCombined(file.id, portalName, file.date); }}
+                                onClick={(e) => { e.stopPropagation(); handleDownloadCombined(file.id, portalName, file.date, file.fileType); }}
                                 disabled={loading}
                                 title="Download Amazon B2C Process1 and Amazon B2C Pivot as single Excel file with two sheets"
                               >
@@ -1112,7 +1262,7 @@ const MacrosGeneratorPage = () => {
                     placeholder="🔍 Search Sales Portal SKU..."
                     value={skuSearchQuery}
                     onChange={(e) => setSkuSearchQuery(e.target.value)}
-                    style={{ 
+                    style={{
                       borderRadius: '20px',
                       paddingLeft: '15px'
                     }}
@@ -1123,13 +1273,13 @@ const MacrosGeneratorPage = () => {
               {skuSearchQuery && (
                 <div className="mb-2">
                   <small className="text-muted">
-                    Showing {skus.filter(sku => 
+                    Showing {skus.filter(sku =>
                       sku.salesPortalSku?.toLowerCase().includes(skuSearchQuery.toLowerCase())
                     ).length} of {skus.length} SKUs
                     {skuSearchQuery && (
-                      <Button 
-                        variant="link" 
-                        size="sm" 
+                      <Button
+                        variant="link"
+                        size="sm"
                         className="p-0 ms-2"
                         onClick={() => setSkuSearchQuery('')}
                       >
@@ -1151,8 +1301,8 @@ const MacrosGeneratorPage = () => {
                   </thead>
                   <tbody>
                     {skus
-                      .filter(sku => 
-                        !skuSearchQuery || 
+                      .filter(sku =>
+                        !skuSearchQuery ||
                         sku.salesPortalSku?.toLowerCase().includes(skuSearchQuery.toLowerCase())
                       )
                       .map((sku) => (
@@ -1192,7 +1342,7 @@ const MacrosGeneratorPage = () => {
                         </td>
                       </tr>
                     ))}
-                    {skuSearchQuery && skus.filter(sku => 
+                    {skuSearchQuery && skus.filter(sku =>
                       sku.salesPortalSku?.toLowerCase().includes(skuSearchQuery.toLowerCase())
                     ).length === 0 && (
                       <tr>
@@ -1357,16 +1507,16 @@ const MacrosGeneratorPage = () => {
           </Button>
           {stateConfig && (
             <>
-              <Button 
-                variant="danger" 
+              <Button
+                variant="danger"
                 onClick={handleDeleteStateConfig}
                 disabled={loading}
               >
                 {loading ? <Spinner size="sm" className="me-2" /> : null}
                 Delete Config
               </Button>
-              <Button 
-                variant="primary" 
+              <Button
+                variant="primary"
                 onClick={() => {
                   setShowStateConfigModal(false);
                   handleCreateStateConfig(selectedPortal);
@@ -1392,8 +1542,8 @@ const MacrosGeneratorPage = () => {
           </Modal.Title>
         </Modal.Header>
         <Modal.Body>
-          <Tabs 
-            activeKey={stateConfigTab} 
+          <Tabs
+            activeKey={stateConfigTab}
             onSelect={(k) => {
               setStateConfigTab(k);
               setError(null);
@@ -1445,8 +1595,8 @@ const MacrosGeneratorPage = () => {
           </Tabs>
         </Modal.Body>
         <Modal.Footer>
-          <Button 
-            variant="secondary" 
+          <Button
+            variant="secondary"
             onClick={() => {
               setShowCreateStateConfigModal(false);
               setStateConfigFile(null);
@@ -1457,9 +1607,9 @@ const MacrosGeneratorPage = () => {
           >
             Cancel
           </Button>
-          <Button 
-            variant="primary" 
-            onClick={handleSubmitStateConfig} 
+          <Button
+            variant="primary"
+            onClick={handleSubmitStateConfig}
             disabled={loading || (stateConfigTab === 'upload' && !stateConfigFile)}
           >
             {loading ? (
@@ -1538,6 +1688,10 @@ const MacrosGeneratorPage = () => {
                     </Form.Group>
                   </Col>
                 </Row>
+              </>
+            )}
+            {(isAmazonPortal() || isFlipkartPortal() || isMyntraPortal()) && (
+                <>
                 <Row>
                   <Col md={12}>
                     <Form.Group className="mb-3">
@@ -1563,32 +1717,83 @@ const MacrosGeneratorPage = () => {
                         />
                       </div>
                       <Form.Text className="text-muted">
-                        {withInventory 
-                          ? 'With Inventory: Includes SKU, FG, Final Invoice No., and Ship To State Tally Ledger columns.' 
+                        {withInventory
+                          ? 'With Inventory: Includes SKU, FG, Final Invoice No., and Ship To State Tally Ledger columns.'
                           : 'Without Inventory: Skips SKU/FG lookup and state config columns (for re-generating files without inventory data).'}
                       </Form.Text>
                     </Form.Group>
                   </Col>
                 </Row>
-              </>
+                </>
             )}
-            <Form.Group className="mb-3">
-              <Form.Label>Raw File (Excel)</Form.Label>
-              <Form.Control
-                type="file"
-                accept=".xlsx,.xls"
-                onChange={handleRawFileChange}
-                required
-              />
-              {rawFile && (
-                <Form.Text className="text-muted">
-                  Selected: {rawFile.name}
+            {/* Myntra: Show 3 file inputs */}
+            {isMyntraPortal() ? (
+              <>
+                <Form.Group className="mb-3">
+                  <Form.Label>1. GSTR Report RTO (CSV/Excel)</Form.Label>
+                  <Form.Control
+                    type="file"
+                    accept=".csv,.xlsx,.xls"
+                    onChange={handleRtoFileChange}
+                    required
+                  />
+                  {rtoFile && (
+                    <Form.Text className="text-muted">
+                      Selected: {rtoFile.name}
+                    </Form.Text>
+                  )}
+                </Form.Group>
+                <Form.Group className="mb-3">
+                  <Form.Label>2. GSTR Report Packed (CSV/Excel)</Form.Label>
+                  <Form.Control
+                    type="file"
+                    accept=".csv,.xlsx,.xls"
+                    onChange={handlePackedFileChange}
+                    required
+                  />
+                  {packedFile && (
+                    <Form.Text className="text-muted">
+                      Selected: {packedFile.name}
+                    </Form.Text>
+                  )}
+                </Form.Group>
+                <Form.Group className="mb-3">
+                  <Form.Label>3. GSTR Report RT (CSV/Excel)</Form.Label>
+                  <Form.Control
+                    type="file"
+                    accept=".csv,.xlsx,.xls"
+                    onChange={handleRtFileChange}
+                    required
+                  />
+                  {rtFile && (
+                    <Form.Text className="text-muted">
+                      Selected: {rtFile.name}
+                    </Form.Text>
+                  )}
+                </Form.Group>
+                <Form.Text className="text-muted d-block mt-2">
+                  All three files are required for Myntra. SKUs will be automatically fetched from the database based on the selected Brand and Seller Portal.
                 </Form.Text>
-              )}
-              <Form.Text className="text-muted d-block mt-1">
-                SKUs will be automatically fetched from the database based on the selected Brand and Seller Portal.
-              </Form.Text>
-            </Form.Group>
+              </>
+            ) : (
+              <Form.Group className="mb-3">
+                <Form.Label>Raw File (Excel)</Form.Label>
+                <Form.Control
+                  type="file"
+                  accept=".xlsx,.xls"
+                  onChange={handleRawFileChange}
+                  required
+                />
+                {rawFile && (
+                  <Form.Text className="text-muted">
+                    Selected: {rawFile.name}
+                  </Form.Text>
+                )}
+                <Form.Text className="text-muted d-block mt-1">
+                  SKUs will be automatically fetched from the database based on the selected Brand and Seller Portal.
+                </Form.Text>
+              </Form.Group>
+            )}
           </Form>
         </Modal.Body>
         <Modal.Footer>
@@ -1598,7 +1803,14 @@ const MacrosGeneratorPage = () => {
           <Button
             variant="primary"
             onClick={handleGenerateFile}
-            disabled={loading || !rawFile || !month || !year || (isAmazonPortal() && !fileType)}
+            disabled={
+              loading || 
+              !month || 
+              !year || 
+              (isAmazonPortal() && !fileType) ||
+              (isMyntraPortal() && (!rtoFile || !packedFile || !rtFile)) ||
+              (!isMyntraPortal() && !rawFile)
+            }
           >
             {loading ? (
               <>
@@ -1613,13 +1825,13 @@ const MacrosGeneratorPage = () => {
       </Modal>
 
       {/* Missing SKU Modal */}
-      <Modal 
-        show={showMissingSKUModal} 
+      <Modal
+        show={showMissingSKUModal}
         onHide={() => {
           setShowMissingSKUModal(false);
           setMissingSKUData({});
           setMissingSKUs([]);
-        }} 
+        }}
         size="lg"
         backdrop="static"
       >
@@ -1642,7 +1854,7 @@ const MacrosGeneratorPage = () => {
             <div className="row">
               <div className="col-md-6">
                 <p className="mb-2">
-                  <strong>Brand:</strong> 
+                  <strong>Brand:</strong>
                   <span className="ms-2 badge bg-primary">
                     {selectedBrand?.name || 'N/A'}
                   </span>
@@ -1650,7 +1862,7 @@ const MacrosGeneratorPage = () => {
               </div>
               <div className="col-md-6">
                 <p className="mb-2">
-                  <strong>Seller Portal:</strong> 
+                  <strong>Seller Portal:</strong>
                   <span className="ms-2 badge bg-info text-dark">
                     {selectedPortal?.name || selectedPortal?.sellerPortalName || 'N/A'}
                   </span>
@@ -1687,8 +1899,8 @@ const MacrosGeneratorPage = () => {
           </Alert>
         </Modal.Body>
         <Modal.Footer>
-          <Button 
-            variant="secondary" 
+          <Button
+            variant="secondary"
             onClick={() => {
               setShowMissingSKUModal(false);
               setMissingSKUData({});
@@ -1698,8 +1910,8 @@ const MacrosGeneratorPage = () => {
           >
             Cancel
           </Button>
-          <Button 
-            variant="primary" 
+          <Button
+            variant="primary"
             onClick={handleAddMissingSKUsAndRetry}
             disabled={addingMissingSKUs || loading}
           >

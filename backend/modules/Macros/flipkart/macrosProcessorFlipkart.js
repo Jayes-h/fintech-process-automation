@@ -158,22 +158,148 @@ function normalizeStateName(state) {
  * @param {string} date - Date string (Month-YYYY)
  * @returns {Object} - { workingFileData, pivotData, afterPivotData, outputWorkbook }
  */
-async function processFlipkartMacros(rawFileBuffer, skuData, stateConfigData, brandName, date) {
+
+function generateTallyReady(pivotRows, fileDate) {
+
+  const safeNumber = (v) => {
+    const n = Number(v);
+    return isNaN(n) ? 0 : n;
+  };
+
+  // ---------- PARSE FILE DATE ----------
+  let voucherDate = new Date();
+  if (fileDate) {
+    const d = new Date(fileDate);
+    if (!isNaN(d)) {
+      voucherDate = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+    }
+  }
+
+  // ---------- BASE HEADERS ----------
+  const headers = [
+    'Vch. Date',
+    'Vch. Type',
+    'Vch. No.',
+    'Ref. No.',
+    'Ref. Date',
+    'Party Ledger',
+    'Sales Ledger',
+    'Stock Item',
+    'Quantity',
+    'Rate',
+    'Unit',
+    'Discount',
+    'Amount',
+    'Discount'
+  ];
+
+  const tallyRows = [];
+
+  // 🔑 rate → starting column index
+  const rateColumnMap = {}; // { 0.05: startIndex, 0.12: startIndex }
+
+  pivotRows.forEach(row => {
+
+    const invoiceNo = row.final_invoice_no;
+    if (!invoiceNo) return;
+
+    const quantity = safeNumber(row.sum_of_item_quantity);
+    const rate = safeNumber(row.rate);
+    const amount = safeNumber(row.sum_of_final_taxable_sales_value);
+
+    const cgst =
+      safeNumber(row.sum_of_final_cgst_taxable) +
+      safeNumber(row.sum_of_final_cgst_shipping);
+
+    const sgst =
+      safeNumber(row.sum_of_final_sgst_taxable) +
+      safeNumber(row.sum_of_final_sgst_shipping);
+
+    const igst =
+      safeNumber(row.sum_of_final_igst_taxable) +
+      safeNumber(row.sum_of_final_igst_shipping);
+
+    // ---------- CREATE NEW COLUMNS IF RATE IS NEW ----------
+    if (rate > 0 && !rateColumnMap[rate]) {
+
+      const startIndex = headers.length;
+
+      headers.push(`CGST ${rate / 2}`);
+      headers.push(`SGST ${rate / 2}`);
+      headers.push(`IGST ${rate}`);
+
+      rateColumnMap[rate] = startIndex;
+
+      // 🧠 Backfill ZERO for all previous rows
+      tallyRows.forEach(r => {
+        r.push(0, 0, 0);
+      });
+    }
+
+    // ---------- BUILD ROW ----------
+    const rowArray = [
+      voucherDate,
+      'Sales',
+      invoiceNo,
+      invoiceNo,
+      voucherDate,
+      row.tally_ledgers,
+      row.tally_ledgers,
+      '',
+      quantity,
+      rate,
+      '',
+      '',
+      amount,
+      ''
+    ];
+
+    // Fill zeros for all existing GST columns
+    const gstColsCount = headers.length - rowArray.length;
+    for (let i = 0; i < gstColsCount; i++) {
+      rowArray.push(0);
+    }
+
+    // ---------- FILL VALUES ONLY IN THIS RATE’S COLUMNS ----------
+    if (rateColumnMap[rate] !== undefined) {
+      const idx = rateColumnMap[rate];
+      rowArray[idx]     = cgst;
+      rowArray[idx + 1] = sgst;
+      rowArray[idx + 2] = igst;
+    }
+
+    tallyRows.push(rowArray);
+  });
+
+  console.log(`✓ Generated ${tallyRows.length} tally rows`);
+  console.log('GST rate columns:', rateColumnMap);
+
+  return {
+    headers,
+    data: tallyRows
+  };
+}
+
+
+async function processFlipkartMacros(rawFileBuffer, skuData, stateConfigData, brandName, date, withInventory ) {
   console.log('=== FLIPKART MACROS PROCESSING ===');
   console.log(`Brand: ${brandName}, Date: ${date}`);
 
-  // Build SKU lookup map
-  const skuMap = {};
-  if (skuData && Array.isArray(skuData)) {
-    for (const item of skuData) {
-      const sku = String(item.SKU || item.salesPortalSku || '').trim();
-      const fg = item.FG || item.tallyNewSku || '';
-      if (sku) {
-        skuMap[sku] = fg;
+  if (withInventory) {
+    // Build SKU lookup map
+    const skuMap = {};
+    if (skuData && Array.isArray(skuData)) {
+      for (const item of skuData) {
+        const sku = String(item.SKU || item.salesPortalSku || '').trim();
+        const fg = item.FG || item.tallyNewSku || '';
+        if (sku) {
+          skuMap[sku] = fg;
+        }
       }
     }
+    console.log(`SKU map loaded with ${Object.keys(skuMap).length} entries`);
   }
-  console.log(`SKU map loaded with ${Object.keys(skuMap).length} entries`);
+
 
   // Build state config lookup map (by normalized state name)
 const stateConfigMap = {};
@@ -211,27 +337,27 @@ if (stateConfigData && Array.isArray(stateConfigData)) {
 
 
 
-
   // Read raw file
-  const workbook = XLSX.read(rawFileBuffer, { type: 'buffer', cellDates: true });
+  const workbook = XLSX.read(rawFileBuffer, {type: 'buffer', cellDates: true});
   const sheetName = workbook.SheetNames[0];
   const worksheet = workbook.Sheets[sheetName];
-  
+
   if (!worksheet) {
     throw new Error('No worksheet found in the uploaded file');
   }
 
   // Convert to JSON
-  const rawData = XLSX.utils.sheet_to_json(worksheet, { defval: null });
+  const rawData = XLSX.utils.sheet_to_json(worksheet, {defval: null});
   console.log(`Raw data loaded: ${rawData.length} rows`);
 
   if (rawData.length === 0) {
     throw new Error('Uploaded file has no data rows');
   }
 
-  // Track missing SKUs
-  const missingSKUs = new Set();
 
+    // Track missing SKUs
+    const missingSKUs = new Set();
+  
   // Process working file data
   const workingFileData = [];
   const mainReportData = []; // Cleaned version of raw
@@ -249,26 +375,27 @@ if (stateConfigData && Array.isArray(stateConfigData)) {
         eventType === 'sale' || eventType === 'return';
 
     const validEventSubType =
-        eventSubType === 'sale' || eventSubType === 'return';
+        eventSubType === 'sale' || eventSubType === 'return' || eventSubType === 'return cancellation';
 
 // if either column is not Sale/Return → skip row
-    if (!validEventType || !validEventSubType) {
+    if ( !validEventSubType) {
       continue;
     }
 
 // Return if ANY column says Return
-    const isReturn = eventType === 'return' || eventSubType === 'return';
+    const isReturn = eventSubType === 'return' || eventSubType === 'return';
 
-    // Clean SKU
-    const rawSku = row['SKU'] || '';
-    const cleanedSku = cleanSKU(rawSku);
 
-    // Lookup FG from SKU map
-    const fg = skuMap[cleanedSku];
-    if (!fg && cleanedSku) {
-      missingSKUs.add(cleanedSku);
+      // Clean SKU
+      const rawSku = row['SKU'] || '';
+      const cleanedSku = cleanSKU(rawSku);
+    if (withInventory) {
+      // Lookup FG from SKU map
+      const fg = skuMap[cleanedSku];
+      if (!fg && cleanedSku) {
+        missingSKUs.add(cleanedSku);
+      }
     }
-
     // Get Seller State from GSTIN
     const sellerGstin = String(row['Seller GSTIN'] || '').trim();
     const sellerState = getStateFromGSTIN(sellerGstin);
@@ -292,7 +419,7 @@ if (stateConfigData && Array.isArray(stateConfigData)) {
     // Compute derived columns
     // Final Price after discount (negative if Return)
     const finalPriceAfterDiscount = isReturn ? -Math.abs(priceAfterDiscount) : priceAfterDiscount;
-    
+
     // Final Shipping Charges (negative if Return)
     const finalShippingCharges = isReturn ? -Math.abs(shippingCharges) : shippingCharges;
 
@@ -345,7 +472,6 @@ if (stateConfigData && Array.isArray(stateConfigData)) {
       product_title: row['Product Title/Description'] || null,
       fsn: row['FSN'] || null,
       sku: cleanedSku,
-      fg: fg || null,
       hsn_code: row['HSN Code'] || null,
       event_type: eventType,
       event_sub_type: row['Event Sub Type'] || null,
@@ -416,7 +542,23 @@ if (stateConfigData && Array.isArray(stateConfigData)) {
       imei: row['IMEI'] || null
     };
 
-    workingFileData.push(workingRow);
+    if (withInventory) {
+      const updatedRow = {};
+
+      for (const key in workingRow) {
+        updatedRow[key] = workingRow[key];
+
+        // Insert FG immediately after SKU
+        if (key === 'sku') {
+          updatedRow.fg = fg || null;
+        }
+      }
+
+      workingFileData.push(updatedRow);
+    } else {
+      // No FG column at all
+      workingFileData.push(workingRow);
+    }
 
     // Build main report row (cleaned raw data)
     const mainReportRow = {
@@ -427,7 +569,6 @@ if (stateConfigData && Array.isArray(stateConfigData)) {
       'Product Title/Description': row['Product Title/Description'],
       'FSN': row['FSN'],
       'SKU': cleanedSku,
-      'FG': fg || '',
       'HSN Code': row['HSN Code'],
       'Event Type': eventType,
       'Event Sub Type': row['Event Sub Type'],
@@ -498,35 +639,60 @@ if (stateConfigData && Array.isArray(stateConfigData)) {
       'IMEI': row['IMEI']
     };
 
-    mainReportData.push(mainReportRow);
+    // ✅ Inject FG after SKU only when inventory is enabled
+    if (withInventory) {
+      const updatedRow = {};
+
+      for (const key in mainReportRow) {
+        updatedRow[key] = mainReportRow[key];
+
+        if (key === 'SKU') {
+          updatedRow['FG'] = fg || '';
+        }
+      }
+
+      mainReportData.push(updatedRow);
+    } else {
+      // No FG column at all
+      mainReportData.push(mainReportRow);
+    }
+
   }
 
   // Check for missing SKUs
-  if (missingSKUs.size > 0) {
+  if (withInventory && missingSKUs.size > 0) {
     const error = new Error(`Some SKUs are missing from the database: ${Array.from(missingSKUs).join(', ')}`);
     error.missingSKUs = Array.from(missingSKUs);
     throw error;
   }
-
   console.log(`Working file data: ${workingFileData.length} rows`);
 
-  // Generate Pivot
+// ==========================
+// Generate Pivot
+// ==========================
   const pivotMap = {};
 
   for (const row of workingFileData) {
-    const key = JSON.stringify({
+    // Build pivot key
+    const keyObject = {
       seller_gstin: row.seller_gstin || '',
       tally_ledgers: row.tally_ledgers || '',
-      final_invoice_no: row.final_invoice_no || '',
-      fg: row.fg || ''
-    });
+      final_invoice_no: row.final_invoice_no || ''
+    };
 
+    if (withInventory) {
+      keyObject.fg = row.fg || '';
+    }
+
+    const key = JSON.stringify(keyObject);
+
+    // Initialize pivot row
     if (!pivotMap[key]) {
       pivotMap[key] = {
         seller_gstin: row.seller_gstin,
         tally_ledgers: row.tally_ledgers,
         final_invoice_no: row.final_invoice_no,
-        fg: row.fg,
+        rate: 0,
         sum_of_item_quantity: 0,
         sum_of_final_taxable_sales_value: 0,
         sum_of_final_cgst_taxable: 0,
@@ -537,8 +703,13 @@ if (stateConfigData && Array.isArray(stateConfigData)) {
         sum_of_final_sgst_shipping: 0,
         sum_of_final_igst_shipping: 0
       };
+
+      if (withInventory) {
+        pivotMap[key].fg = row.fg || '';
+      }
     }
 
+    // Aggregate values
     pivotMap[key].sum_of_item_quantity += safeNumber(row.item_quantity);
     pivotMap[key].sum_of_final_taxable_sales_value += safeNumber(row.final_taxable_sales_value);
     pivotMap[key].sum_of_final_cgst_taxable += safeNumber(row.final_cgst_taxable);
@@ -548,169 +719,264 @@ if (stateConfigData && Array.isArray(stateConfigData)) {
     pivotMap[key].sum_of_final_cgst_shipping += safeNumber(row.final_cgst_shipping);
     pivotMap[key].sum_of_final_sgst_shipping += safeNumber(row.final_sgst_shipping);
     pivotMap[key].sum_of_final_igst_shipping += safeNumber(row.final_igst_shipping);
+    // pivotMap[key].rate += safeNumber(row.sum_of_final_cgst_taxable + row.sum_of_final_sgst_taxable + row.sum_of_final_igst_taxable) / safeNumber(row.sum_of_final_taxable_sales_value);
+
   }
 
   const pivotData = Object.values(pivotMap);
   console.log(`Pivot data: ${pivotData.length} rows`);
 
-  // Generate After-Pivot (add Rate column)
-  const afterPivotData = pivotData.map(row => ({
-    seller_gstin: row.seller_gstin,
-    tally_ledgers: row.tally_ledgers,
-    invoice_no: row.final_invoice_no,
-    fg: row.fg,
-    quantity: row.sum_of_item_quantity,
-    rate: row.sum_of_item_quantity !== 0 ? row.sum_of_final_taxable_sales_value / row.sum_of_item_quantity : 0,
-    taxable_sales_value: row.sum_of_final_taxable_sales_value,
-    cgst_sales_amount: row.sum_of_final_cgst_taxable,
-    sgst_sales_amount: row.sum_of_final_sgst_taxable,
-    igst_sales_amount: row.sum_of_final_igst_taxable,
-    shipping_taxable_value: row.sum_of_final_shipping_taxable_value,
-    cgst_shipping_amount: row.sum_of_final_cgst_shipping,
-    sgst_shipping_amount: row.sum_of_final_sgst_shipping,
-    igst_shipping_amount: row.sum_of_final_igst_shipping
-  }));
+  pivotData.forEach(row => {
+
+    const totalTax =
+      safeNumber(row.sum_of_final_cgst_taxable) +
+      safeNumber(row.sum_of_final_sgst_taxable) +
+      safeNumber(row.sum_of_final_igst_taxable);
+  
+    const taxableValue =
+      safeNumber(row.sum_of_final_taxable_sales_value);
+  
+    let rate = 0;
+  
+    if (taxableValue > 0) {
+      rate = totalTax / taxableValue;
+  
+      // ---------- GST SLAB NORMALIZATION ----------
+      if (rate >= 0.04 && rate <= 0.06) {
+        rate = 0.05;
+      } else if (rate >= 0.11 && rate <= 0.13) {
+        rate = 0.12;
+      } else if (rate >= 0.17 && rate <= 0.19) {
+        rate = 0.18;
+      } else {
+        rate = 0; // outside expected GST slabs
+      }
+    }
+  
+    row.rate = +rate.toFixed(2);
+  });
+    
+// ==========================
+// Generate After-Pivot
+// ==========================
+  const afterPivotData = pivotData.map(row => {
+    const result = {
+      seller_gstin: row.seller_gstin,
+      tally_ledgers: row.tally_ledgers,
+      invoice_no: row.final_invoice_no,
+      quantity: row.sum_of_item_quantity,
+      rate: row.rate,
+      taxable_sales_value: row.sum_of_final_taxable_sales_value,
+      cgst_sales_amount: row.sum_of_final_cgst_taxable,
+      sgst_sales_amount: row.sum_of_final_sgst_taxable,
+      igst_sales_amount: row.sum_of_final_igst_taxable,
+      shipping_taxable_value: row.sum_of_final_shipping_taxable_value,
+      cgst_shipping_amount: row.sum_of_final_cgst_shipping,
+      sgst_shipping_amount: row.sum_of_final_sgst_shipping,
+      igst_shipping_amount: row.sum_of_final_igst_shipping
+    };
+
+    if (withInventory) {
+      result.fg = row.fg;
+    }
+
+    return result;
+  });
 
   console.log(`After-pivot data: ${afterPivotData.length} rows`);
 
-  // Create output workbook with 6 sheets
+// ==========================
+// Create Workbook
+// ==========================
   const outputWorkbook = XLSX.utils.book_new();
 
-  // 1. main-report (cleaned & filtered raw)
+// 1. main-report
   const mainReportSheet = XLSX.utils.json_to_sheet(mainReportData);
   XLSX.utils.book_append_sheet(outputWorkbook, mainReportSheet, 'main-report');
 
-  // 2. working-file
-  const workingFileSheetData = workingFileData.map(row => ({
-    'Seller GSTIN': row.seller_gstin,
-    'Seller State': row.seller_state,
-    'Order ID': row.order_id,
-    'Order Item ID': row.order_item_id,
-    'Product Title': row.product_title,
-    'FSN': row.fsn,
-    'SKU': row.sku,
-    'FG': row.fg,
-    'HSN Code': row.hsn_code,
-    'Event Type': row.event_type,
-    'Event Sub Type': row.event_sub_type,
-    'Order Type': row.order_type,
-    'Fulfilment Type': row.fulfilment_type,
-    'Order Date': row.order_date,
-    'Order Approval Date': row.order_approval_date,
-    'Item Quantity': row.item_quantity,
-    'Order Shipped From State': row.order_shipped_from_state,
-    'Warehouse ID': row.warehouse_id,
-    'Price Before Discount': row.price_before_discount,
-    'Total Discount': row.total_discount,
-    'Seller Share': row.seller_share,
-    'Bank Offer Share': row.bank_offer_share,
-    'Price After Discount': row.price_after_discount,
-    'Shipping Charges': row.shipping_charges,
-    'Final -Price after discount': row.final_price_after_discount,
-    'Final-Shipping Charges': row.final_shipping_charges,
-    'Final Taxable sales value': row.final_taxable_sales_value,
-    'Final Shipping Taxable value': row.final_shipping_taxable_value,
-    'Final CGST on Taxable value': row.final_cgst_taxable,
-    'Final SGST on Taxable value': row.final_sgst_taxable,
-    'Final IGST on Taxable value': row.final_igst_taxable,
-    'Final CGST on Shipping value': row.final_cgst_shipping,
-    'Final SGST on Shipping value': row.final_sgst_shipping,
-    'Final IGST on Shipping value': row.final_igst_shipping,
-    'Final Invoice Amount': row.final_invoice_amount,
-    'Tax Type': row.tax_type,
-    'Taxable Value': row.taxable_value,
-    'Conversion Rate': row.conversion_rate,
-    'Final GST Rate': row.final_gst_rate,
-    'IGST Rate': row.igst_rate,
-    'IGST Amount': row.igst_amount,
-    'CGST Rate': row.cgst_rate,
-    'CGST Amount': row.cgst_amount,
-    'SGST Rate': row.sgst_rate,
-    'SGST Amount': row.sgst_amount,
-    'TCS IGST Rate': row.tcs_igst_rate,
-    'TCS IGST Amount': row.tcs_igst_amount,
-    'TCS CGST Rate': row.tcs_cgst_rate,
-    'TCS CGST Amount': row.tcs_cgst_amount,
-    'TCS SGST Rate': row.tcs_sgst_rate,
-    'TCS SGST Amount': row.tcs_sgst_amount,
-    'Total TCS Deducted': row.total_tcs_deducted,
-    'Buyer Invoice ID': row.buyer_invoice_id,
-    'Buyer Invoice Date': row.buyer_invoice_date,
-    'Buyer Invoice Amount': row.buyer_invoice_amount,
-    "Customer's Billing Pincode": row.customer_billing_pincode,
-    "Customer's Billing State": row.customer_billing_state,
-    "Customer's Delivery Pincode": row.customer_delivery_pincode,
-    "Customer's Delivery State": row.customer_delivery_state,
-    'Tally Ledgers': row.tally_ledgers,
-    'Final Invoice No.': row.final_invoice_no,
-    'Usual Price': row.usual_price,
-    'Is Shopsy Order?': row.is_shopsy_order,
-    'TDS Rate': row.tds_rate,
-    'TDS Amount': row.tds_amount,
-    'IRN': row.irn,
-    'Business Name': row.business_name,
-    'Business GST Number': row.business_gst_number,
-    'Beneficiary Name': row.beneficiary_name,
-    'IMEI': row.imei
-  }));
-  const workingFileSheet = XLSX.utils.json_to_sheet(workingFileSheetData);
-  XLSX.utils.book_append_sheet(outputWorkbook, workingFileSheet, 'working-file');
+// 2. working-file
+  const workingFileSheetData = workingFileData.map(row => {
+    const sheetRow = {
+      'Seller GSTIN': row.seller_gstin,
+      'Seller State': row.seller_state,
+      'Order ID': row.order_id,
+      'Order Item ID': row.order_item_id,
+      'Product Title': row.product_title,
+      'FSN': row.fsn,
+      'SKU': row.sku,
+      'HSN Code': row.hsn_code,
+      'Event Type': row.event_type,
+      'Event Sub Type': row.event_sub_type,
+      'Order Type': row.order_type,
+      'Fulfilment Type': row.fulfilment_type,
+      'Order Date': row.order_date,
+      'Order Approval Date': row.order_approval_date,
+      'Item Quantity': row.item_quantity,
+      'Order Shipped From State': row.order_shipped_from_state,
+      'Warehouse ID': row.warehouse_id,
+      'Price Before Discount': row.price_before_discount,
+      'Total Discount': row.total_discount,
+      'Seller Share': row.seller_share,
+      'Bank Offer Share': row.bank_offer_share,
+      'Price After Discount': row.price_after_discount,
+      'Shipping Charges': row.shipping_charges,
+      'Final -Price after discount': row.final_price_after_discount,
+      'Final-Shipping Charges': row.final_shipping_charges,
+      'Final Taxable sales value': row.final_taxable_sales_value,
+      'Final Shipping Taxable value': row.final_shipping_taxable_value,
+      'Final CGST on Taxable value': row.final_cgst_taxable,
+      'Final SGST on Taxable value': row.final_sgst_taxable,
+      'Final IGST on Taxable value': row.final_igst_taxable,
+      'Final CGST on Shipping value': row.final_cgst_shipping,
+      'Final SGST on Shipping value': row.final_sgst_shipping,
+      'Final IGST on Shipping value': row.final_igst_shipping,
+      'Final Invoice Amount': row.final_invoice_amount,
+      'Tax Type': row.tax_type,
+      'Taxable Value': row.taxable_value,
+      'Conversion Rate': row.conversion_rate,
+      'Final GST Rate': row.final_gst_rate,
+      'IGST Rate': row.igst_rate,
+      'IGST Amount': row.igst_amount,
+      'CGST Rate': row.cgst_rate,
+      'CGST Amount': row.cgst_amount,
+      'SGST Rate': row.sgst_rate,
+      'SGST Amount': row.sgst_amount,
+      'TCS IGST Rate': row.tcs_igst_rate,
+      'TCS IGST Amount': row.tcs_igst_amount,
+      'TCS CGST Rate': row.tcs_cgst_rate,
+      'TCS CGST Amount': row.tcs_cgst_amount,
+      'TCS SGST Rate': row.tcs_sgst_rate,
+      'TCS SGST Amount': row.tcs_sgst_amount,
+      'Total TCS Deducted': row.total_tcs_deducted,
+      'Buyer Invoice ID': row.buyer_invoice_id,
+      'Buyer Invoice Date': row.buyer_invoice_date,
+      'Buyer Invoice Amount': row.buyer_invoice_amount,
+      "Customer's Billing Pincode": row.customer_billing_pincode,
+      "Customer's Billing State": row.customer_billing_state,
+      "Customer's Delivery Pincode": row.customer_delivery_pincode,
+      "Customer's Delivery State": row.customer_delivery_state,
+      'Tally Ledgers': row.tally_ledgers,
+      'Final Invoice No.': row.final_invoice_no,
+      'Usual Price': row.usual_price,
+      'Is Shopsy Order?': row.is_shopsy_order,
+      'TDS Rate': row.tds_rate,
+      'TDS Amount': row.tds_amount,
+      'IRN': row.irn,
+      'Business Name': row.business_name,
+      'Business GST Number': row.business_gst_number,
+      'Beneficiary Name': row.beneficiary_name,
+      'IMEI': row.imei
+    };
 
-  // 3. pivot
-  const pivotSheetData = pivotData.map(row => ({
-    'Seller GSTIN': row.seller_gstin,
-    'Tally ledgers': row.tally_ledgers,
-    'Final Invoice No.': row.final_invoice_no,
-    'FG': row.fg,
-    'Sum of Item Quantity': row.sum_of_item_quantity,
-    'Sum of Final Taxable sales value': row.sum_of_final_taxable_sales_value,
-    'Sum of Final CGST on Taxable value': row.sum_of_final_cgst_taxable,
-    'Sum of Final SGST on Taxable value': row.sum_of_final_sgst_taxable,
-    'Sum of Final IGST on Taxable value': row.sum_of_final_igst_taxable,
-    'Sum of Final Shipping Taxable value': row.sum_of_final_shipping_taxable_value,
-    'Sum of Final CGST on Shipping value': row.sum_of_final_cgst_shipping,
-    'Sum of Final SGST on Shipping value': row.sum_of_final_sgst_shipping,
-    'Sum of Final IGST on Shipping value': row.sum_of_final_igst_shipping
-  }));
-  const pivotSheet = XLSX.utils.json_to_sheet(pivotSheetData);
-  XLSX.utils.book_append_sheet(outputWorkbook, pivotSheet, 'pivot');
+    if (withInventory) {
+      sheetRow['FG'] = row.fg;
+    }
 
-  // 4. after-pivot
-  const afterPivotSheetData = afterPivotData.map(row => ({
-    'Seller GSTIN': row.seller_gstin,
-    'Tally ledgers': row.tally_ledgers,
-    'Final Invoice No.': row.invoice_no,
-    'FG': row.fg,
-    'Quantity': row.quantity,
-    'Rate': row.rate,
-    'Taxable Sales Value': row.taxable_sales_value,
-    'CGST Sales Amount': row.cgst_sales_amount,
-    'SGST Sales Amount': row.sgst_sales_amount,
-    'IGST Sales Amount': row.igst_sales_amount,
-    'Shipping Taxable Value': row.shipping_taxable_value,
-    'CGST Shipping Amount': row.cgst_shipping_amount,
-    'SGST Shipping Amount': row.sgst_shipping_amount,
-    'IGST Shipping Amount': row.igst_shipping_amount
-  }));
-  const afterPivotSheet = XLSX.utils.json_to_sheet(afterPivotSheetData);
-  XLSX.utils.book_append_sheet(outputWorkbook, afterPivotSheet, 'after-pivot');
+    return sheetRow;
+  });
 
-  // 5. source-sku
-  const sourceSkuSheetData = (skuData || []).map(item => ({
-    'SKU': item.SKU || item.salesPortalSku || '',
-    'FG': item.FG || item.tallyNewSku || ''
-  }));
-  const sourceSkuSheet = XLSX.utils.json_to_sheet(sourceSkuSheetData);
-  XLSX.utils.book_append_sheet(outputWorkbook, sourceSkuSheet, 'source-sku');
+  XLSX.utils.book_append_sheet(
+      outputWorkbook,
+      XLSX.utils.json_to_sheet(workingFileSheetData),
+      'working-file'
+  );
 
-  // 6. source-state
-  const sourceStateSheetData = (stateConfigData || []).map(item => ({
-    'States': item.States || item.states || '',
-    'Flipkart Pay Ledger': item['Amazon Pay Ledger'] || item['amazon pay ledger'] || '',
-    'Invoice No.': item['Invoice No.'] || item['Invoice No'] || ''
-  }));
-  const sourceStateSheet = XLSX.utils.json_to_sheet(sourceStateSheetData);
-  XLSX.utils.book_append_sheet(outputWorkbook, sourceStateSheet, 'source-state');
+// 3. pivot
+  const pivotSheetData = pivotData.map(row => {
+    const sheetRow = {
+      'Seller GSTIN': row.seller_gstin,
+      'Tally ledgers': row.tally_ledgers,
+      'Final Invoice No.': row.final_invoice_no,
+      'Sum of Item Quantity': row.sum_of_item_quantity,
+      'Rate': row.rate,
+      'Sum of Final Taxable sales value': row.sum_of_final_taxable_sales_value,
+      'Sum of Final CGST on Taxable value': row.sum_of_final_cgst_taxable,
+      'Sum of Final SGST on Taxable value': row.sum_of_final_sgst_taxable,
+      'Sum of Final IGST on Taxable value': row.sum_of_final_igst_taxable,
+      'Sum of Final Shipping Taxable value': row.sum_of_final_shipping_taxable_value,
+      'Sum of Final CGST on Shipping value': row.sum_of_final_cgst_shipping,
+      'Sum of Final SGST on Shipping value': row.sum_of_final_sgst_shipping,
+      'Sum of Final IGST on Shipping value': row.sum_of_final_igst_shipping
+    };
+
+    if (withInventory) {
+      sheetRow['FG'] = row.fg;
+    }
+
+    return sheetRow;
+  });
+
+  XLSX.utils.book_append_sheet(
+      outputWorkbook,
+      XLSX.utils.json_to_sheet(pivotSheetData),
+      'pivot'
+  );
+
+// 4. after-pivot
+  const afterPivotSheetData = afterPivotData.map(row => {
+    const sheetRow = {
+      'Seller GSTIN': row.seller_gstin,
+      'Tally ledgers': row.tally_ledgers,
+      'Final Invoice No.': row.invoice_no,
+      'Quantity': row.quantity,
+      'Rate': row.rate,
+      'Taxable Sales Value': row.taxable_sales_value,
+      'CGST Sales Amount': row.cgst_sales_amount,
+      'SGST Sales Amount': row.sgst_sales_amount,
+      'IGST Sales Amount': row.igst_sales_amount,
+      'Shipping Taxable Value': row.shipping_taxable_value,
+      'CGST Shipping Amount': row.cgst_shipping_amount,
+      'SGST Shipping Amount': row.sgst_shipping_amount,
+      'IGST Shipping Amount': row.igst_shipping_amount
+    };
+
+    if (withInventory) {
+      sheetRow['FG'] = row.fg;
+    }
+
+    return sheetRow;
+  });
+
+  XLSX.utils.book_append_sheet(
+      outputWorkbook,
+      XLSX.utils.json_to_sheet(afterPivotSheetData),
+      'after-pivot'
+  );
+
+    // ============================================================
+    console.log('Step 4.5: Create Tally Ready sheet');
+    const tallyReadyResult = generateTallyReady(pivotData, date);
+    // Build array of arrays: [headers, ...dataRows]
+    const tallyReadySheetData = [tallyReadyResult.headers, ...tallyReadyResult.data];
+    const tallyReadySheet = XLSX.utils.aoa_to_sheet(tallyReadySheetData);
+    XLSX.utils.book_append_sheet(outputWorkbook, tallyReadySheet, 'tally ready');
+    console.log(`✓ Added tally ready sheet with ${tallyReadyResult.data.length} rows`);
+
+// 5. source-sku
+  if(withInventory) {
+    XLSX.utils.book_append_sheet(
+        outputWorkbook,
+        XLSX.utils.json_to_sheet(
+            (skuData || []).map(item => ({
+              'SKU': item.SKU || item.salesPortalSku || '',
+              'FG': item.FG || item.tallyNewSku || ''
+            }))
+        ),
+        'source-sku'
+    );
+  }
+// 6. source-state
+  XLSX.utils.book_append_sheet(
+      outputWorkbook,
+      XLSX.utils.json_to_sheet(
+          (stateConfigData || []).map(item => ({
+            'States': item.States || item.states || '',
+            'Flipkart Pay Ledger': item['Flipkart Pay Ledger'] || item['flipkart pay ledger'] || '',
+            'Invoice No.': item['Invoice No.'] || item['Invoice No'] || ''
+          }))
+      ),
+      'source-state'
+  );
 
   console.log('=== FLIPKART MACROS PROCESSING COMPLETE ===');
   console.log(`Output workbook sheets: ${outputWorkbook.SheetNames.join(', ')}`);

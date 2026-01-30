@@ -1,5 +1,54 @@
 const ExcelJS = require('exceljs');
-const XLSX = require('xlsx-js-style');
+const XLSXJSSTYLE = require('xlsx-js-style');
+const XLSX = require('xlsx');
+
+// const XLSX = require('xlsx');
+
+/**
+ * Read ALL original headers from uploaded file (no ExcelJS mutation)
+ */
+function getOriginalHeadersFromXLSX(buffer) {
+  const wb = XLSX.read(buffer, { type: 'buffer' });
+  const sheet = wb.Sheets[wb.SheetNames[0]];
+
+  const range = XLSX.utils.decode_range(sheet['!ref']);
+  const headers = [];
+
+  for (let c = range.s.c; c <= range.e.c; c++) {
+    const cell = sheet[XLSX.utils.encode_cell({ r: 0, c })];
+    headers.push(cell ? String(cell.v).trim() : '');
+  }
+
+  return headers;
+}
+
+function removeHeaders(ws, allHeaders, headersToRemove) {
+  // iterate right → left to avoid index shifting
+  for (let i = allHeaders.length - 1; i >= 0; i--) {
+    if (headersToRemove.includes(allHeaders[i])) {
+      ws.spliceColumns(i + 1, 1); // ExcelJS is 1-based
+      allHeaders.splice(i, 1);
+    }
+  }
+}
+
+
+/**
+ * Keep header array in sync with worksheet inserts
+ */
+function insertHeaderAfter(allHeaders, afterHeader, newHeaders) {
+  if (!Array.isArray(newHeaders)) {
+    throw new Error(`newHeaders must be an array. Got: ${typeof newHeaders}`);
+  }
+
+  const index = allHeaders.indexOf(afterHeader);
+  if (index === -1) {
+    throw new Error(`Header "${afterHeader}" not found in allHeaders`);
+  }
+
+  allHeaders.splice(index + 1, 0, ...newHeaders);
+}
+
 
 /**
  * Formula Evaluator - Evaluates Excel formulas to actual values
@@ -14,6 +63,8 @@ class FormulaEvaluator {
     this.missingSKUs = new Set(); // Track missing SKUs
   }
 
+   
+  
   /**
    * Get cell value by column letter and row number
    * @param {string} colLetter - Column letter (e.g., 'A', 'N', 'AA')
@@ -153,6 +204,7 @@ class FormulaEvaluator {
           const missingSKU = String(lookupValue).trim();
           if (missingSKU) {
             this.missingSKUs.add(missingSKU);
+            console.warn(`⚠ WARNING: Missing SKU detected during formula evaluation: "${missingSKU}"`);
             // Return empty string instead of 0 to indicate missing value
             // This will prevent blank calculations
             return '';
@@ -538,11 +590,13 @@ class FormulaEvaluator {
  */
 function findColumnIndex(ws, headerName) {
   const headerRow = ws.getRow(1);
+  
   for (let i = 1; i <= headerRow.cellCount; i++) {
     const cellValue = headerRow.getCell(i).value;
     if (cellValue && String(cellValue).trim() === headerName) {
       return i;
     }
+   
   }
   throw new Error(`Header '${headerName}' not found`);
 }
@@ -736,7 +790,14 @@ function getColumnLetter(colIndex) {
  * @param {string} sheetName - Name of the sheet to modify
  * @param {boolean} withInventory - If false, skip FG, Ship To State Tally Ledger, Final Invoice No. columns
  */
-function insertColumnsAndRenameHeaders(workbook, sheetName, withInventory = true) {
+function insertColumnsAndRenameHeaders(workbook, sheetName, withInventory = true, allHeaders) {
+
+  const afterHeader = 'Ship To City';
+  const idx = allHeaders.indexOf(afterHeader);
+  // if (idx === -1) throw new Error(`Header ${afterHeader} not found`);
+  // allHeaders.splice(idx + 1, 0, ...newHeaders);
+
+  
   const ws = workbook.getWorksheet(sheetName);
   if (!ws) {
     throw new Error(`Sheet '${sheetName}' not found`);
@@ -802,49 +863,83 @@ function insertColumnsAndRenameHeaders(workbook, sheetName, withInventory = true
 
   // 2. Insert 9 columns after "Compensatory Cess Tax"
   // Insert them one at a time in reverse order to maintain positions
-  try {
-    const cessCol = findColumnIndex(ws, 'Compensatory Cess Tax');
-    const headers = [
-      'Final Tax rate',
-      'Final Taxable Sales Value',
-      'Final Taxable Shipping Value',
-      'Final CGST Tax',
-      'Final SGST Tax',
-      'Final IGST Tax',
-      'Final Shipping CGST Tax',
-      'Final Shipping SGST Tax',
-      'Final Shipping IGST Tax',
-      'Final Amount Receivable',
-    ];
-    // Insert from right to left (reverse order) so positions don't shift
-    for (let i = headers.length - 1; i >= 0; i--) {
-      insertColumnAt(cessCol + 1, headers[i]);
+    try {
+
+           // 🔥 REMOVE UNWANTED HEADERS FIRST
+          const headersToRemove = [
+            'Shipping Cess Tax Amount',
+            'Gift Wrap Amount',
+            'Gift Wrap Utgst Tax',
+            'Gift Wrap Igst Tax',
+            'Gift Wrap Cgst Tax',
+            'Gift Wrap Sgst Tax',
+            'Gift Wrap Promo Discount',
+            'Gift Wrap Promo Discount Basis'
+          ];
+
+      removeHeaders(ws, allHeaders, headersToRemove);
+      
+      const cessCol = findColumnIndex(ws, 'Compensatory Cess Tax');
+    
+      const newHeaders = [
+        'Final Tax rate',
+        'Final Taxable Sales Value',
+        'Final Taxable Shipping Value',
+        'Final CGST Tax',
+        'Final SGST Tax',
+        'Final IGST Tax',
+        'Final Shipping CGST Tax',
+        'Final Shipping SGST Tax',
+        'Final Shipping IGST Tax',
+        'Final Amount Receivable',
+      ];
+    
+      // ✅ Keep header array in sync
+      insertHeaderAfter(allHeaders, 'Compensatory Cess Tax', newHeaders);
+    
+      // ✅ Insert into worksheet (right → left)
+      for (let i = newHeaders.length - 1; i >= 0; i--) {
+        insertColumnAt(cessCol + 1, newHeaders[i]);
+      }
+    
+      console.log(`Inserted ${newHeaders.length} columns after "Compensatory Cess Tax"`);
+    } catch (e) {
+      console.warn('Could not insert columns after Compensatory Cess Tax:', e.message);
     }
-    console.log(`Inserted 9 columns after "Compensatory Cess Tax"`);
-  } catch (e) {
-    console.warn('Could not insert columns after Compensatory Cess Tax:', e.message);
-  }
+    
 
   // 3. Insert 2 columns after "Ship To State" (only if withInventory is true)
-  if (withInventory) {
+  
     try {
       const shipToStateCol = findColumnIndex(ws, 'Ship To State');
-      // Insert in reverse order
+  
+      // ✅ Update header list FIRST
+      insertHeaderAfter(allHeaders, 'Ship To State', [
+        'Ship To State Tally Ledger',
+        'Final Invoice No.',
+      ]);
+  
+      // ✅ Insert into worksheet (reverse order)
       insertColumnAt(shipToStateCol + 1, 'Final Invoice No.');
       insertColumnAt(shipToStateCol + 1, 'Ship To State Tally Ledger');
+  
       console.log(`Inserted 2 columns after "Ship To State"`);
     } catch (e) {
       console.warn('Could not insert columns after Ship To State:', e.message);
     }
-  } else {
-    console.log('Skipping Ship To State Tally Ledger and Final Invoice No. columns (withInventory=false)');
-  }
+  
 
   // 4. Insert column after "Sku" last (leftmost) (only if withInventory is true)
   if (withInventory) {
     try {
       const skuCol = findColumnIndex(ws, 'Sku');
+  
+      // ✅ Sync header array
+      insertHeaderAfter(allHeaders, 'Sku', ['FG']);
+  
+      // ✅ Insert worksheet column
       insertColumnAt(skuCol + 1, 'FG');
+  
       console.log(`Inserted column "FG" after "Sku"`);
     } catch (e) {
       console.warn('Could not insert column after Sku:', e.message);
@@ -855,6 +950,7 @@ function insertColumnsAndRenameHeaders(workbook, sheetName, withInventory = true
 
   return ws;
 }
+
 
 /**
  * STEP 2: Apply Formulas to Ranges
@@ -905,6 +1001,9 @@ function applyFormulas(ws, sourceSheetName = 'Source', withInventory = true) {
   const colShipFromState = getColLetter('Ship From State');
   const colTaxExclusiveGross = getColLetter('Tax Exclusive Gross');
 
+  console.log("col tcsCgstAmount", colTcsCgstAmount);
+  console.log("col tcsSgstAmount", colTcsSgstAmount);
+  console.log("col tcsIgstAmount", colTcsIgstAmount);
 
   for (let row = 2; row <= lastRow; row++) {
     try {
@@ -912,13 +1011,13 @@ function applyFormulas(ws, sourceSheetName = 'Source', withInventory = true) {
       // Only apply if withInventory is true
       if (withInventory && colSku && colFG) {
         ws.getCell(`${colFG}${row}`).value = {
-          formula: `VLOOKUP(${colSku}${row},'source-sku'!$A$2:$B$229,2,TRUE)`
+          formula: `VLOOKUP(${colSku}${row},'source-sku'!$A$2:$B$229,2,FALSE)`
         };
       }
 
       // Column Ship To State Tally Ledger (AA): =VLOOKUP(Ship To State,'source-state'!$A$2:$C$37,3,0)
       // Only apply if withInventory is true
-      if (withInventory && colShipToState && colShipToStateTally) {
+      if (colShipToState && colShipToStateTally) {
         ws.getCell(`${colShipToStateTally}${row}`).value = {
           formula: `VLOOKUP(${colShipToState}${row},'source-state'!$A$2:$C$37,3,0)`
         };
@@ -926,7 +1025,7 @@ function applyFormulas(ws, sourceSheetName = 'Source', withInventory = true) {
 
       // Column Final Invoice No. (AB): =VLOOKUP(Ship To State,'source-state'!$A$2:$C$37,2,TRUE)
       // Only apply if withInventory is true
-      if (withInventory && colShipToState && colFinalInvoiceNo) {
+      if (colShipToState && colFinalInvoiceNo) {
         ws.getCell(`${colFinalInvoiceNo}${row}`).value = {
           formula: `VLOOKUP(${colShipToState}${row},'source-state'!$A$2:$C$37,2,TRUE)`
         };
@@ -1041,21 +1140,29 @@ function applyFormulas(ws, sourceSheetName = 'Source', withInventory = true) {
         if (colFinalShippingCGSTTax) parts.push(`${colFinalShippingCGSTTax}${row}`); // AZ
         if (colFinalShippingSGSTTax) parts.push(`${colFinalShippingSGSTTax}${row}`); // BA
         if (colFinalShippingIGSTTax) parts.push(`${colFinalShippingIGSTTax}${row}`); // BB
-        
+
+
+                
         // Find columns to subtract (CA, CC, CG)
         const subtractParts = [];
-        try {
-          const colItemPromoAmount = getColLetter('Item Promo Amount'); // CA
-          if (colItemPromoAmount) subtractParts.push(`${colItemPromoAmount}${row}`);
-        } catch (e) {}
         
-        try {
-          const colShippingPromoAmount = getColLetter('Shipping Promo Amount'); // CC
-          if (colShippingPromoAmount) subtractParts.push(`${colShippingPromoAmount}${row}`);
-        } catch (e) {}
+        if (colTcsIgstAmount) subtractParts.push(`${colTcsIgstAmount}${row}`); // CG
+        if (colTcsCgstAmount) subtractParts.push(`${colTcsCgstAmount}${row}`); // BB
+        if (colTcsSgstAmount) subtractParts.push(`${colTcsSgstAmount}${row}`); // BB
+
+        
+        // try {
+        //   const colItemPromoAmount = getColLetter('Item Promo Amount'); // CA
+        //   if (colItemPromoAmount) subtractParts.push(`${colItemPromoAmount}${row}`);
+        // } catch (e) {}
+        
+        // try {
+        //   const colShippingPromoAmount = getColLetter('Shipping Promo Amount'); // CC
+        //   if (colShippingPromoAmount) subtractParts.push(`${colShippingPromoAmount}${row}`);
+        // } catch (e) {}
         
         // CG = Tcs Igst Amount
-        if (colTcsIgstAmount) subtractParts.push(`${colTcsIgstAmount}${row}`); // CG
+        // if (colTcsIgstAmount) subtractParts.push(`${colTcsIgstAmount}${row}`); // CG
         
         if (parts.length > 0) {
           const formula = parts.join('+') + (subtractParts.length > 0 ? '-' + subtractParts.join('-') : '');
@@ -1159,7 +1266,9 @@ function buildStateToInvoiceMap(sourceSheet) {
  * @param {Worksheet} sourceSheet - ExcelJS worksheet for Source sheet (optional)
  * @param {boolean} withInventory - If false, group only by Seller Gstin (no FG, Invoice, Ledger)
  */
-function generatePivot(process1Data, sourceSheet = null, withInventory = true) {
+function generatePivot(process1Data, sourceSheet = null, withInventory = true, stateConfigData) {
+
+ 
   const pivot = {};
 
   // ---------- SAFE NUMBER ----------
@@ -1180,67 +1289,49 @@ function generatePivot(process1Data, sourceSheet = null, withInventory = true) {
     return String(value).trim();
   };
 
-  // ---------- GROUP KEY ----------
+  // ---------- EXCEL-CORRECT GROUP KEY ----------
+  // IMPORTANT:
+  // Do NOT group on Final Invoice No. or Ledger (derived fields)
   const createGroupKey = (row) => {
+  
     if (withInventory) {
+      
       return JSON.stringify({
         gstin: normalizeString(row['Seller Gstin']),
-        invoice: normalizeString(row['Final Invoice No.']),
-        ledger: normalizeString(row['Ship To State Tally Ledger']),
-        fg: normalizeString(row['FG'])
+        // shipToState: normalizeString(row['Ship To State']),
+        finalInvoiceNo: normalizeString(row['Final Invoice No.']),
+        // tallyLedger: normalizeString(row['Ship To State Tally Ledger']),
+        fg: normalizeString(row['FG']),
+        // Quantity: safeNumber(row['Quantity']),
       });
     }
     return JSON.stringify({
-      gstin: normalizeString(row['Seller Gstin'])
+      gstin: normalizeString(row['Seller Gstin']),
+      shipToState: normalizeString(row['Ship To State']),
     });
   };
 
-  // ---------- VALIDATION TRACKERS ----------
-  let totalProcess1FinalTaxableSalesValue = 0;
-  let processedRowCount = 0;
-  let skippedRowCount = 0;
-
-  // ---------- SELLER LEVEL MAPS (ONLY FOR SALES VALUE) ----------
-  const sellerTaxableSalesMap = {};
-  const sellerTaxableShippingMap = {};
-
-  // ---------- FIRST PASS: SELLER LEVEL TOTALS (ONLY SALES) ----------
+  
+  
+  // ---------- BUILD PIVOT ----------
   process1Data.forEach((row) => {
     const gstin = normalizeString(row['Seller Gstin']);
+    const shipToState = normalizeString(row['Ship To State']);
     if (!gstin) return;
 
-    const salesValue = safeNumber(row['Final Taxable Sales Value']);
-    const shippingValue = safeNumber(row['Final Taxable Shipping Value']);
-
-    totalProcess1FinalTaxableSalesValue += salesValue;
-
-    sellerTaxableSalesMap[gstin] =
-      (sellerTaxableSalesMap[gstin] || 0) + salesValue;
-
-    sellerTaxableShippingMap[gstin] =
-      (sellerTaxableShippingMap[gstin] || 0) + shippingValue;
-  });
-
-  // ---------- SECOND PASS: BUILD PIVOT ----------
-  process1Data.forEach((row) => {
-    const gstin = normalizeString(row['Seller Gstin']);
-    if (!gstin) {
-      skippedRowCount++;
-      return;
-    }
-
-    processedRowCount++;
     const groupKey = createGroupKey(row);
 
     if (!pivot[groupKey]) {
       pivot[groupKey] = withInventory
         ? {
             'Seller Gstin': gstin,
-            'Final Invoice No.': normalizeString(row['Final Invoice No.']),
-            'Ship To State Tally Ledger': normalizeString(row['Ship To State Tally Ledger']),
+            'Ship To State': shipToState,
+            'Final Invoice No.': '',                     // filled later
+            'Ship To State Tally Ledger': '',            // filled later
             'FG': normalizeString(row['FG']),
+            'Rate': 0,
             'Sum of Quantity': 0,
-            'Sum of Final Taxable Sales Value': 0, // filled later with seller-level
+            'Sum of Final Taxable Sales Value': 0,
             'Sum of Final CGST Tax': 0,
             'Sum of Final SGST Tax': 0,
             'Sum of Final IGST Tax': 0,
@@ -1255,8 +1346,12 @@ function generatePivot(process1Data, sourceSheet = null, withInventory = true) {
           }
         : {
             'Seller Gstin': gstin,
+            'Ship To State': shipToState,
+            'Final Invoice No.': '',                     // filled later
+            'Ship To State Tally Ledger': '',            // filled later
             'Sum of Quantity': 0,
-            'Sum of Final Taxable Sales Value': 0, // filled later with seller-level
+            'Rate': 0,
+            'Sum of Final Taxable Sales Value': 0,
             'Sum of Final CGST Tax': 0,
             'Sum of Final SGST Tax': 0,
             'Sum of Final IGST Tax': 0,
@@ -1271,55 +1366,291 @@ function generatePivot(process1Data, sourceSheet = null, withInventory = true) {
           };
     }
 
-    // ---------- NORMAL SUMS (INCLUDING TAX COLUMNS) ----------
-    pivot[groupKey]['Sum of Quantity'] += safeNumber(row['Quantity']);
-    pivot[groupKey]['Sum of Final CGST Tax'] += safeNumber(row['Final CGST Tax']);
-    pivot[groupKey]['Sum of Final SGST Tax'] += safeNumber(row['Final SGST Tax']);
-    pivot[groupKey]['Sum of Final IGST Tax'] += safeNumber(row['Final IGST Tax']);
-    pivot[groupKey]['Sum of Final Taxable Shipping Value'] += safeNumber(row['Final Taxable Shipping Value']);
-    pivot[groupKey]['Sum of Final Shipping CGST Tax'] += safeNumber(row['Final Shipping CGST Tax']);
-    pivot[groupKey]['Sum of Final Shipping SGST Tax'] += safeNumber(row['Final Shipping SGST Tax']);
-    pivot[groupKey]['Sum of Final Shipping IGST Tax'] += safeNumber(row['Final Shipping IGST Tax']);
-    pivot[groupKey]['Sum of Tcs Cgst Amount'] += safeNumber(row['Tcs Cgst Amount']);
-    pivot[groupKey]['Sum of Tcs Sgst Amount'] += safeNumber(row['Tcs Sgst Amount']);
-    pivot[groupKey]['Sum of Tcs Igst Amount'] += safeNumber(row['Tcs Igst Amount']);
-    pivot[groupKey]['Sum of Final Amount Receivable'] += safeNumber(row['Final Amount Receivable']);
+    const p = pivot[groupKey];
+
+    // ---------- SUM FIELDS (EXACT NAMES PRESERVED) ----------
+    p['Sum of Quantity'] += safeNumber(row['Quantity']);
+    p['Sum of Final Taxable Sales Value'] += safeNumber(row['Final Taxable Sales Value']) - safeNumber(row['Final Taxable Shipping Value']);
+    p['Sum of Final CGST Tax'] += safeNumber(row['Final CGST Tax']) - safeNumber(row['Final Shipping CGST Tax']);
+    p['Sum of Final SGST Tax'] += safeNumber(row['Final SGST Tax']) - safeNumber(row['Final Shipping SGST Tax']);
+    p['Sum of Final IGST Tax'] += safeNumber(row['Final IGST Tax']) - safeNumber(row['Final Shipping IGST Tax']);
+    p['Sum of Final Taxable Shipping Value'] += safeNumber(row['Final Taxable Shipping Value']);
+    p['Sum of Final Shipping CGST Tax'] += safeNumber(row['Final Shipping CGST Tax']) ;
+    p['Sum of Final Shipping SGST Tax'] += safeNumber(row['Final Shipping SGST Tax']) ;
+    p['Sum of Final Shipping IGST Tax'] += safeNumber(row['Final Shipping IGST Tax']) ;
+    p['Sum of Tcs Cgst Amount'] += safeNumber(row['Tcs Cgst Amount']);
+    p['Sum of Tcs Sgst Amount'] += safeNumber(row['Tcs Sgst Amount']);
+    p['Sum of Tcs Igst Amount'] += safeNumber(row['Tcs Igst Amount']);
+
+    const totalTcs =
+  safeNumber(p['Sum of Tcs Cgst Amount']) +
+  safeNumber(p['Sum of Tcs Sgst Amount']) +
+  safeNumber(p['Sum of Tcs Igst Amount']);
+
+p['Sum of Final Amount Receivable'] =
+  safeNumber(p['Sum of Final Taxable Sales Value']) +
+  safeNumber(p['Sum of Final CGST Tax']) +
+  safeNumber(p['Sum of Final SGST Tax']) +
+  safeNumber(p['Sum of Final IGST Tax']) +
+  safeNumber(p['Sum of Final Taxable Shipping Value']) +
+  safeNumber(p['Sum of Final Shipping CGST Tax']) +
+  safeNumber(p['Sum of Final Shipping SGST Tax']) +
+  safeNumber(p['Sum of Final Shipping IGST Tax']) -
+  totalTcs;
+
   });
 
-  // ---------- APPLY FINAL TAXABLE SALES FIX (ONLY FOR SALES VALUE) ----------
-  Object.values(pivot).forEach((row) => {
-    const gstin = row['Seller Gstin'];
-    const sales = sellerTaxableSalesMap[gstin] || 0;
-    const shipping = sellerTaxableShippingMap[gstin] || 0;
-
-    row['Sum of Final Taxable Sales Value'] = sales - shipping;
-  });
-
-  // ---------- FINAL ----------
   const pivotRows = Object.values(pivot);
 
-  const totalPivotFinalTaxableSalesValue = pivotRows.reduce(
-    (sum, r) => sum + safeNumber(r['Sum of Final Taxable Sales Value']),
-    0
-  );
+  // ---------- DERIVE RATE (AS PER YOUR FORMULA) ----------
+  pivotRows.forEach(row => {
+    const totalTax =
+      safeNumber(row['Sum of Final CGST Tax']) +
+      safeNumber(row['Sum of Final SGST Tax']) +
+      safeNumber(row['Sum of Final IGST Tax']);
+
+    const taxableValue =
+      safeNumber(row['Sum of Final Taxable Sales Value']);
+
+    row['Rate'] =
+      taxableValue > 0
+        ? +(totalTax / taxableValue).toFixed(6)
+        : 0;
+  });
+
+  // ---------- DERIVE INVOICE & LEDGER (EXCEL STYLE) ----------
+  if (Array.isArray(stateConfigData)) {
+    for (const row of pivotRows) {
+      const shipToState = String(row['Ship To State'] || '').trim();
+      // 🔒 reset every row to avoid stale values
+      row['Final Invoice No.'] = '';
+      row['Ship To State Tally Ledger'] = '';
+  
+      if (!shipToState) continue;
+  
+      // 🔍 find matching state config
+      const stateConfig = stateConfigData.find(
+        (s) => String(s.States || '').trim() === shipToState
+      );
+  
+      if (!stateConfig) {
+        console.warn(`⚠ State not found in config: ${shipToState}`);
+        continue;
+      }
+  
+      // ✅ map values
+      row['Final Invoice No.'] = stateConfig['Invoice No.'] || '';
+      row['Ship To State Tally Ledger'] =
+        stateConfig['Amazon Pay Ledger'] || '';
+    }
+  
+    console.log('✓ Mapped Invoice No. and Ledger directly from stateConfigData');
+  }
+  
+
+  // ---------- VALIDATION TOTALS ----------
+const totalProcess1FinalTaxableSalesValue = process1Data.reduce(
+  (sum, row) => sum + safeNumber(row['Final Taxable Sales Value']),
+  0
+);
+
+const totalPivotFinalTaxableSalesValue = pivotRows.reduce(
+  (sum, row) => sum + safeNumber(row['Sum of Final Taxable Sales Value']),
+  0
+);
+
 
   return {
     pivotRows,
     validationStats: {
       totalProcess1Rows: process1Data.length,
-      processedRows: processedRowCount,
-      skippedRows: skippedRowCount,
+      pivotRows: pivotRows.length,
+  
       totalProcess1FinalTaxableSalesValue,
       totalPivotFinalTaxableSalesValue,
+  
       difference: Math.abs(
         totalProcess1FinalTaxableSalesValue - totalPivotFinalTaxableSalesValue
-      )
+      ),
+  
+      isValid:
+        Math.abs(
+          totalProcess1FinalTaxableSalesValue - totalPivotFinalTaxableSalesValue
+        ) < 0.01
     }
   };
+  
 }
 
 
+/**
+ * Generate Tally Ready sheet data from pivot data
+ * @param {Array} pivotRows - Pivot data rows
+ * @param {string} fileDate - Date on which file is created (format: YYYY-MM-DD)
+ * @returns {Object} - Object with headers array and data array (for aoa_to_sheet)
+ */
+function generateTallyReady(pivotRows, fileDate) {
+  const GST_SLABS = [0.05, 0.12, 0.18];
+  const GST_TOLERANCE = 0.01; // ±1%
 
+  function normalizeGstRate(rawRate) {
+    if (!rawRate || rawRate <= 0) return 0;
+  
+    // Force numeric
+    const rate = Number(rawRate);
+  
+    // ---------- GST SLAB RANGES ----------
+    if (rate >= 0.04 && rate <= 0.06) return 0.05;
+    if (rate >= 0.11 && rate <= 0.13) return 0.12;
+    if (rate >= 0.17 && rate <= 0.19) return 0.18;
+  
+    // 🚨 Outside expected GST ranges
+    console.warn(`⚠ Unmapped GST rate detected: ${rate}`);
+    return 0;
+  }
+  
+
+   // ---------- SAFE NUMBER ----------
+   const safeNumber = (value) => {
+    if (value === null || value === undefined || value === '') return 0;
+    if (typeof value === 'string') {
+      const cleaned = value.replace(/,/g, '').trim();
+      const num = Number(cleaned);
+      return isNaN(num) ? 0 : num;
+    }
+    const num = Number(value);
+    return isNaN(num) ? 0 : num;
+  };
+
+  // ---------- NORMALIZE GST RATE IN PIVOT ROWS ----------
+  pivotRows.forEach(row => {
+    const rawRate = safeNumber(row['Rate']);
+    row['_NormalizedRate'] = normalizeGstRate(rawRate);
+  });
+
+    // ---------- COLLECT UNIQUE GST RATES ----------
+  const uniqueRatesSet = new Set();
+
+  pivotRows.forEach(row => {
+    const rate = row['_NormalizedRate'];
+    if (rate > 0) {
+      uniqueRatesSet.add(rate);
+    }
+  });
+
+  const uniqueRates = Array.from(uniqueRatesSet).sort((a, b) => a - b);
+
+  // Define headers (including duplicate Discount column)
+  const headers = [
+    'Vch. Date',
+    'Vch. Type',
+    'Vch. No.',
+    'Ref. No.',
+    'Ref. Date',
+    'Party Ledger',
+    'Sales Ledger',
+    'Stock Item',
+    'Quantity',
+    'Rate',
+    'Unit',
+    'Discount',
+    'Amount',
+    'Discount',
+  ];
+
+      // ---------- ADD GST HEADERS PER RATE ----------
+    uniqueRates.forEach(rate => {
+      headers.push(`CGST ${rate / 2}`);
+      headers.push(`SGST ${rate / 2}`);
+      headers.push(`IGST ${rate}`);
+    });
+  const tallyRows = [];
+
+ 
+  // ---------- PARSE FILE DATE ----------
+  // fileDate format: YYYY-MM-DD, convert to Date object
+  let voucherDate;
+
+  if (fileDate) {
+    const parsedDate = new Date(fileDate);
+  
+    if (!isNaN(parsedDate.getTime())) {
+      const year = parsedDate.getFullYear();
+      const month = parsedDate.getMonth(); // 0-based
+  
+      // ✅ Last date of file month
+      voucherDate = new Date(year, month + 1, 0);
+    } else {
+      // fallback
+      voucherDate = new Date();
+    }
+  } else {
+    voucherDate = new Date();
+  }
+
+  // ---------- BUILD TALLY ROWS (as arrays to handle duplicate column names) ----------
+  pivotRows.forEach((row) => {
+    const invoiceNo = row['Final Invoice No.'] || '';
+    const shipToState = row['Ship To State'] || '';
+    const partyLedger = row['Ship To State Tally Ledger'] || 'Amazon Pay Ledger';
+    const stockItem = row['FGoods'] || '';
+    const quantity = safeNumber(row['Sum of Quantity']);
+    const amount = safeNumber(row['Sum of Final Taxable Sales Value']);
+    const rate = row['_NormalizedRate'];  // ✅
+
+    const cgst = safeNumber(row['Sum of Final CGST Tax']);
+    const sgst = safeNumber(row['Sum of Final SGST Tax']);
+    const igst = safeNumber(row['Sum of Final IGST Tax']);
+    
+
+    // Skip rows without invoice number
+    if (!invoiceNo) {
+      console.warn(`⚠ Skipping tally row: Missing Invoice No. for state: ${shipToState}`);
+      return;
+    }
+
+    // Build row as array in exact order of headers
+    const rowArray = [
+      voucherDate,           // Vch. Date
+      shipToState,           // Vch. Type
+      invoiceNo,             // Vch. No.
+      invoiceNo,             // Ref. No. (using invoice no)
+      voucherDate,           // Ref. Date
+      partyLedger,           // Party Ledger
+      'Amazon Pay Ledger',   // Sales Ledger
+      stockItem,             // Stock Item
+      quantity,              // Quantity
+      rate,                  // Rate
+      '',                    // Unit (user will add)
+      '',                    // Discount (first)
+      amount,                // Amount
+      '',                    // Discount (second)
+    ];
+
+    // ---------- GST VALUES PER RATE ----------
+  uniqueRates.forEach(r => {
+    if (r === rate) {
+      rowArray.push(cgst); // CGST r/2
+      rowArray.push(sgst); // SGST r/2
+      rowArray.push(igst); // IGST r
+    } else {
+      rowArray.push(0);
+      rowArray.push(0);
+      rowArray.push(0);
+    }
+  });
+
+    tallyRows.push(rowArray);
+  });
+
+  console.log(`✓ Generated ${tallyRows.length} tally ready rows from ${pivotRows.length} pivot rows`);
+
+  // Return as array of arrays format for aoa_to_sheet
+  return {
+    headers: headers,
+    data: tallyRows
+  };
+}
 
 /**
  * Main processing function
@@ -1332,6 +1663,8 @@ function generatePivot(process1Data, sourceSheet = null, withInventory = true) {
  * @param {boolean} withInventory - If false, skip FG, Ship To State Tally Ledger, Final Invoice No. columns (default: true)
  */
 async function processMacros(rawFileBuffer, skuFileBuffer, brandName, date, skuData = null, stateConfigData = null, withInventory = true) {
+    
+  let allHeaders = [];
   try {
     // Validate file buffers
     if (!rawFileBuffer || rawFileBuffer.length === 0) {
@@ -1341,6 +1674,20 @@ async function processMacros(rawFileBuffer, skuFileBuffer, brandName, date, skuD
     if (!skuFileBuffer || skuFileBuffer.length === 0) {
       throw new Error('SKU file buffer is empty or invalid');
     }
+
+        // 🔹 STEP 3: Capture ORIGINAL headers BEFORE ExcelJS mutations
+        // 🔹 CAPTURE ORIGINAL HEADERS (SOURCE OF TRUTH)
+        const originalHeaders = getOriginalHeadersFromXLSX(rawFileBuffer);
+
+        // This will track ALL headers (original + inserted)
+         allHeaders = [...originalHeaders];
+
+        console.log('📌 ORIGINAL FILE HEADERS:');
+        originalHeaders.forEach((h, i) => {
+          console.log(`Header ${i + 1}: ${h}`);
+        });
+
+    
 
     // Always use XLSX library first to read files (it handles both .xls and .xlsx)
     // ExcelJS only supports .xlsx, so we need to convert .xls files first
@@ -1483,7 +1830,7 @@ async function processMacros(rawFileBuffer, skuFileBuffer, brandName, date, skuD
     // ============================================================
     console.log('Step 1: Insert required columns');
     console.log(`withInventory: ${withInventory}`);
-    insertColumnsAndRenameHeaders(workbook, 'amazon-b2c-process1', withInventory);
+    insertColumnsAndRenameHeaders(workbook, 'amazon-b2c-process1', withInventory, allHeaders);
 
     // ============================================================
     // STEP 2: APPLY FORMULAS
@@ -1526,7 +1873,7 @@ async function processMacros(rawFileBuffer, skuFileBuffer, brandName, date, skuD
     }
     
     const stateLookupMap = {}; // State -> { ledger, invoiceNo }
-    if (withInventory && stateConfigData && Array.isArray(stateConfigData)) {
+    if (stateConfigData && Array.isArray(stateConfigData)) {
       for (const item of stateConfigData) {
         const state = String(item.States || item.states || '').trim();
         const ledger = item['Amazon Pay Ledger'] || item.amazonPayLedger || '';
@@ -1536,15 +1883,15 @@ async function processMacros(rawFileBuffer, skuFileBuffer, brandName, date, skuD
         }
       }
       console.log(`✓ Created State lookup map with ${Object.keys(stateLookupMap).length} entries`);
-    } else if (!withInventory) {
-      console.log('✓ Skipping State lookup map (withInventory=false)');
+    } else  {
+      console.log('State lookup map not created');
     }
 
     // Initialize formula evaluator with worksheet and source sheet
     const evaluator = new FormulaEvaluator(ws, mainSourceSheet);
 
     // Read all data rows and evaluate formulas
-    const process1Json = [];
+    let process1Json = [];
     const lastRow = Math.min(ws.actualRowCount || 50000, 50000);
     const missingSKUsSet = new Set();
     
@@ -1598,10 +1945,13 @@ async function processMacros(rawFileBuffer, skuFileBuffer, brandName, date, skuD
           
           // Check if this is FG column and has empty value (missing SKU)
           // Only check if withInventory is true
+          // Note: This check happens before VLOOKUP, so it catches pre-existing empty FG values
+          // Missing SKUs from VLOOKUP are caught later after the lookup is performed
           if (withInventory && headerName === 'FG' && (cellValue === '' || cellValue === null || cellValue === undefined)) {
-            // Track the missing SKU
+            // Track the missing SKU if we have a SKU value
             if (skuValue) {
               missingSKUsSet.add(skuValue);
+              console.warn(`⚠ WARNING: FG column is empty for SKU: "${skuValue}" (row ${row})`);
             }
             rowHasError = true;
             // Don't add this cell value - will skip row
@@ -1621,10 +1971,18 @@ async function processMacros(rawFileBuffer, skuFileBuffer, brandName, date, skuD
       // Manually calculate VLOOKUP values using lookup maps
       // This replaces the Excel formulas that can't be evaluated during processing
       // Only apply if withInventory is true
-      if (withInventory) {
+      
         // FG = VLOOKUP(SKU, source-sku, 2, FALSE)
-        if (skuValue && skuLookupMap[skuValue]) {
-          rowData['FG'] = skuLookupMap[skuValue];
+        if (withInventory && skuValue) {
+          if (skuLookupMap[skuValue]) {
+            rowData['FG'] = skuLookupMap[skuValue];
+          } else {
+            // SKU is missing from database - track it
+            missingSKUsSet.add(skuValue);
+            console.warn(`⚠ WARNING: Missing SKU detected: "${skuValue}" (row ${row})`);
+            rowData['FG'] = ''; // Set empty to trigger row skip check
+            rowHasError = true;
+          }
         }
         
         // Ship To State Tally Ledger = VLOOKUP(Ship To State, source-state, 3, 0) -> Amazon Pay Ledger
@@ -1636,7 +1994,7 @@ async function processMacros(rawFileBuffer, skuFileBuffer, brandName, date, skuD
         if (shipToStateValue && stateLookupMap[shipToStateValue]) {
           rowData['Final Invoice No.'] = stateLookupMap[shipToStateValue].invoiceNo;
         }
-      }
+      
 
        if (!rowData || Object.keys(rowData).length === 0) {
         continue; // SKIP ghost / empty rows
@@ -1654,13 +2012,32 @@ async function processMacros(rawFileBuffer, skuFileBuffer, brandName, date, skuD
           rowData['Quantity'] = -Math.abs(Number(rowData['Quantity']));
         }
       
-        process1Json.push(rowData);
+        const fullRow = {};
+        for (const header of allHeaders) {
+          fullRow[header] = rowData[header] ?? '';
+        }
+
+        process1Json.push(fullRow);
       }
     }
 
     // Check if we have missing SKUs (only if withInventory is true)
     if (withInventory && (missingSKUsSet.size > 0 || evaluator.missingSKUs.size > 0)) {
       const allMissingSKUs = Array.from(new Set([...missingSKUsSet, ...evaluator.missingSKUs]));
+      
+      // 🔹 LOG WARNING BEFORE THROWING ERROR
+      console.warn('\n' + '='.repeat(80));
+      console.warn('⚠⚠⚠  MISSING SKU WARNING  ⚠⚠⚠');
+      console.warn('='.repeat(80));
+      console.warn(`Found ${allMissingSKUs.length} missing SKU(s) in the database:`);
+      allMissingSKUs.forEach((sku, index) => {
+        console.warn(`  ${index + 1}. "${sku}"`);
+      });
+      console.warn('='.repeat(80));
+      console.warn('These SKUs are not present in the source-sku sheet/database.');
+      console.warn('Please add them to the SKU file and try again.');
+      console.warn('='.repeat(80) + '\n');
+      
       const error = new Error(`Some SKUs are missing from the database: ${allMissingSKUs.join(', ')}`);
       error.missingSKUs = allMissingSKUs;
       throw error;
@@ -1677,7 +2054,7 @@ async function processMacros(rawFileBuffer, skuFileBuffer, brandName, date, skuD
     // For proper operation, formulas should be evaluated first (by Excel or formula engine)
     // The pivot function safely handles any remaining strings, nulls, or invalid values
     // Pass source sheet to pivot function for Final Invoice No. lookup
-    const pivotResult = generatePivot(process1Json, mainSourceSheet, withInventory);
+    const pivotResult = generatePivot(process1Json, mainSourceSheet, withInventory, stateConfigData);
     const pivotData = pivotResult.pivotRows;
     const pivotValidationStats = pivotResult.validationStats;
     console.log(`Generated ${pivotData.length} pivot rows`);
@@ -1693,40 +2070,51 @@ async function processMacros(rawFileBuffer, skuFileBuffer, brandName, date, skuD
     // B (Final Invoice No.) = VLOOKUP(Seller Gstin, process1, 'Final Invoice No.', exact match)
     // C (Ship To State Tally Ledger) = VLOOKUP(Seller Gstin, process1, 'Ship To State Tally Ledger', exact match)
     // D (FG) = VLOOKUP(Seller Gstin, process1, 'FG', exact match)
-    if (withInventory) {
-      // Create a lookup map from process1Json for fast lookups by Seller Gstin
-      const process1LookupMap = {};
-      for (const row of process1Json) {
-        const gstin = row['Seller Gstin'];
-        if (gstin && !process1LookupMap[gstin]) {
-          // Store first match (like VLOOKUP with exact match)
-          process1LookupMap[gstin] = {
-            'Final Invoice No.': row['Final Invoice No.'] || '',
-            'Ship To State Tally Ledger': row['Ship To State Tally Ledger'] || '',
-            'FG': row['FG'] || ''
-          };
-        }
-      }
-      console.log(`✓ Created lookup map with ${Object.keys(process1LookupMap).length} unique Seller GSTINs`);
+    // if (withInventory) {
+    //   // Create a lookup map from process1Json for fast lookups by Seller Gstin
+    //   const process1LookupMap = {};
+    //   for (const row of process1Json) {
+    //     const gstin = row['Seller Gstin'];
+    //     if (gstin && !process1LookupMap[gstin]) {
+    //       // Store first match (like VLOOKUP with exact match)
+    //       process1LookupMap[gstin] = {
+    //         'Final Invoice No.': row['Final Invoice No.'] || '',
+    //         'Ship To State Tally Ledger': row['Ship To State Tally Ledger'] || '',
+    //         'FG': row['FG'] || ''
+    //       };
+    //     }
+    //   }
+    //   console.log(`✓ Created lookup map with ${Object.keys(process1LookupMap).length} unique Seller GSTINs`);
       
-      // Update pivotData with looked-up values
-      for (const pivotRow of pivotData) {
-        const gstin = pivotRow['Seller Gstin'];
-        const lookupData = process1LookupMap[gstin];
-        if (lookupData) {
-          pivotRow['Final Invoice No.'] = lookupData['Final Invoice No.'];
-          pivotRow['Ship To State Tally Ledger'] = lookupData['Ship To State Tally Ledger'];
-          pivotRow['FG'] = lookupData['FG'];
-        }
-      }
-      console.log(`✓ Applied VLOOKUP values to ${pivotData.length} pivot rows`);
-    } else {
-      console.log('✓ Skipping pivot VLOOKUP (withInventory=false)');
-    }
+    //   // Update pivotData with looked-up values
+    //   for (const pivotRow of pivotData) {
+    //     const gstin = pivotRow['Seller Gstin'];
+    //     const lookupData = process1LookupMap[gstin];
+    //     if (lookupData) {
+    //       pivotRow['Final Invoice No.'] = lookupData['Final Invoice No.'];
+    //       pivotRow['Ship To State Tally Ledger'] = lookupData['Ship To State Tally Ledger'];
+    //       pivotRow['FG'] = lookupData['FG'];
+    //     }
+    //   }
+    //   console.log(`✓ Applied VLOOKUP values to ${pivotData.length} pivot rows`);
+    // } else {
+    //   console.log('✓ Skipping pivot VLOOKUP (withInventory=false)');
+    // }
     
     const pivotSheet = XLSX.utils.json_to_sheet(pivotData);
     
     XLSX.utils.book_append_sheet(outputWorkbook, pivotSheet, 'amazon-b2c-pivot');
+    
+    // ============================================================
+    // STEP 5.5: CREATE TALLY READY SHEET
+    // ============================================================
+    console.log('Step 5.5: Create Tally Ready sheet');
+    const tallyReadyResult = generateTallyReady(pivotData, date);
+    // Build array of arrays: [headers, ...dataRows]
+    const tallyReadySheetData = [tallyReadyResult.headers, ...tallyReadyResult.data];
+    const tallyReadySheet = XLSX.utils.aoa_to_sheet(tallyReadySheetData);
+    XLSX.utils.book_append_sheet(outputWorkbook, tallyReadySheet, 'tally ready');
+    console.log(`✓ Added tally ready sheet with ${tallyReadyResult.data.length} rows`);
     
     // Report1 is same as Pivot but values only
     const report1Sheet = XLSX.utils.json_to_sheet(pivotData);
@@ -1735,11 +2123,144 @@ async function processMacros(rawFileBuffer, skuFileBuffer, brandName, date, skuD
     // ============================================================
     // STEP 6: ADD AMAZON-B2C-PROCESS1 SHEET TO OUTPUT WORKBOOK
     // ============================================================
-    console.log('Step 6: Add amazon-b2c-process1 sheet to output workbook');
-    const process1Sheet = XLSX.utils.json_to_sheet(process1Json);
-    XLSX.utils.book_append_sheet(outputWorkbook, process1Sheet, 'amazon-b2c-process1');
-    console.log(`✓ Added amazon-b2c-process1 sheet with ${process1Json.length} rows`);
+// Step 6: Add amazon-b2c-process1 sheet to output workbook
+console.log('Step 6: Add amazon-b2c-process1 sheet to output workbook');
+console.log(`Total headers count: ${allHeaders.length}`);
 
+// 🔹 NEW APPROACH: Use aoa_to_sheet (array of arrays) instead of json_to_sheet
+// This gives us complete control over every cell and prevents column truncation
+// Ensure every row has all headers, even if missing in worksheet
+process1Json = process1Json.map(row => {
+  const newRow = { ...row };
+  allHeaders.forEach(header => {
+    if (!(header in newRow)) {
+      newRow[header] = ''; // add empty string for missing columns
+    }
+  });
+  return newRow;
+});
+
+// Build array of arrays: [headers, ...dataRows]
+// Each row is an array with values in the exact order of allHeaders
+const sheetData = [];
+// First row: headers
+sheetData.push([...allHeaders]); // Create a copy to avoid mutation
+
+// Subsequent rows: data values in the same order as headers
+process1Json.forEach(row => {
+  const rowArray = allHeaders.map(header => {
+    const value = row[header];
+    // Handle null/undefined - convert to empty string
+    if (value === null || value === undefined) {
+      return '';
+    }
+    return value;
+  });
+  // Ensure rowArray has exactly allHeaders.length elements
+  while (rowArray.length < allHeaders.length) {
+    rowArray.push('');
+  }
+  sheetData.push(rowArray);
+});
+
+// 🔹 CRITICAL FIX: Ensure ALL columns are explicitly represented in the first data row
+// XLSX may truncate trailing columns if they're completely empty, so we ensure
+// at least the first data row has explicit values (even if empty strings) for all columns
+if (sheetData.length > 1 && allHeaders.length > 0) {
+  const firstDataRow = sheetData[1];
+  // Ensure first data row has exactly allHeaders.length elements
+  for (let i = 0; i < allHeaders.length; i++) {
+    if (firstDataRow[i] === undefined || firstDataRow[i] === null) {
+      firstDataRow[i] = ''; // Explicitly set empty string
+    }
+  }
+  // Ensure array length matches header count
+  if (firstDataRow.length < allHeaders.length) {
+    while (firstDataRow.length < allHeaders.length) {
+      firstDataRow.push(''); // Add empty strings for missing columns
+    }
+  }
+  console.log(`✓ Ensured first data row has ${firstDataRow.length} columns (expected ${allHeaders.length})`);
+}
+
+console.log(`✓ Built sheet data: ${sheetData.length} rows (1 header + ${sheetData.length - 1} data rows), ${allHeaders.length} columns`);
+
+// Create sheet from array of arrays - this preserves ALL columns
+const process1Sheet = XLSX.utils.aoa_to_sheet(sheetData);
+
+// Verify the sheet was created correctly
+const sheetRange = XLSX.utils.decode_range(process1Sheet['!ref']);
+const actualColCount = sheetRange.e.c + 1; // +1 because column index is 0-based
+const actualRowCount = sheetRange.e.r + 1; // +1 because row index is 0-based
+
+console.log(`✓ Sheet created with range: ${process1Sheet['!ref']}`);
+console.log(`✓ Sheet has ${actualColCount} columns (expected ${allHeaders.length})`);
+console.log(`✓ Sheet has ${actualRowCount} rows (expected ${sheetData.length})`);
+
+if (actualColCount !== allHeaders.length) {
+  console.error(`❌ ERROR: Column count mismatch! Expected ${allHeaders.length}, got ${actualColCount}`);
+  console.error(`Missing columns: ${allHeaders.length - actualColCount}`);
+  
+  // Log which headers are actually present
+  const presentHeaders = [];
+  for (let i = 0; i < actualColCount; i++) {
+    const colLetter = XLSX.utils.encode_col(i);
+    const headerCellRef = `${colLetter}1`;
+    const cell = process1Sheet[headerCellRef];
+    presentHeaders.push(cell ? cell.v : `[Missing at col ${i}]`);
+  }
+  console.error(`Present headers (${presentHeaders.length}):`, presentHeaders.slice(-10)); // Last 10
+  console.error(`Expected last 10 headers:`, allHeaders.slice(-10));
+  
+  // Force the range to include all columns
+  const endCol = XLSX.utils.encode_col(allHeaders.length - 1);
+  const endRow = sheetData.length;
+  process1Sheet['!ref'] = `A1:${endCol}${endRow}`;
+  console.log(`✓ Forced range to: ${process1Sheet['!ref']}`);
+  
+  // Manually ensure all header cells exist
+  allHeaders.forEach((header, colIndex) => {
+    const colLetter = XLSX.utils.encode_col(colIndex);
+    const headerCellRef = `${colLetter}1`;
+    if (!process1Sheet[headerCellRef]) {
+      process1Sheet[headerCellRef] = { t: 's', v: header };
+      console.log(`✓ Created missing header cell: ${headerCellRef} = "${header}"`);
+    } else {
+      // Ensure header value is correct
+      process1Sheet[headerCellRef].v = header;
+    }
+  });
+  
+  // Ensure at least first data row has all columns
+  if (sheetData.length > 1) {
+    allHeaders.forEach((header, colIndex) => {
+      const colLetter = XLSX.utils.encode_col(colIndex);
+      const cellRef = `${colLetter}2`;
+      if (!process1Sheet[cellRef]) {
+        process1Sheet[cellRef] = { t: 's', v: '' };
+      }
+    });
+  }
+  
+  // Re-verify after fix
+  const newRange = XLSX.utils.decode_range(process1Sheet['!ref']);
+  const newColCount = newRange.e.c + 1;
+  console.log(`✓ After fix: Sheet has ${newColCount} columns (expected ${allHeaders.length})`);
+} else {
+  console.log(`✓ All ${allHeaders.length} columns are present!`);
+  // Log last 5 headers to verify
+  const lastHeaders = [];
+  for (let i = Math.max(0, allHeaders.length - 5); i < allHeaders.length; i++) {
+    const colLetter = XLSX.utils.encode_col(i);
+    const headerCellRef = `${colLetter}1`;
+    const cell = process1Sheet[headerCellRef];
+    lastHeaders.push(cell ? cell.v : `[Missing]`);
+  }
+  console.log(`✓ Last 5 headers verified:`, lastHeaders);
+}
+
+XLSX.utils.book_append_sheet(outputWorkbook, process1Sheet, 'amazon-b2c-process1');
+console.log(`✓ Added amazon-b2c-process1 sheet with ${process1Json.length} rows`);     
     // ============================================================
     // STEP 7: ADD SOURCE-SKU SHEET TO OUTPUT WORKBOOK
     // ============================================================

@@ -340,7 +340,7 @@ exports.generateMacros = async (req, res, next) => {
 
     // Get state config for this brand and seller portal (only if withInventory is true)
     let stateConfigData = null;
-    if (useInventory) {
+    
       try {
         const stateConfig = await StateConfig.findOne({
           where: {
@@ -359,10 +359,7 @@ exports.generateMacros = async (req, res, next) => {
         console.warn('Error fetching state config:', stateConfigError.message);
         // Continue without state config - it's optional
       }
-    } else {
-      console.log('Skipping state config fetching (withInventory=false)');
-    }
-
+    
     // Process macros
     let result;
     let missingSKUs = [];
