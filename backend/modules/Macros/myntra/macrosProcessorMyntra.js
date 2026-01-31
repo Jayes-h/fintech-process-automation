@@ -109,7 +109,7 @@ function parseCSV(csvBuffer) {
   }
 }
 
-function generateTallyReady(pivotRows, fileDate) {
+function generateTallyReady(pivotRows, fileDate, withInventory) {
 
   const safeNumber = (v) => {
     const n = Number(v);
@@ -136,6 +136,7 @@ function generateTallyReady(pivotRows, fileDate) {
     'Sales Ledger',
     'Stock Item',
     'Quantity',
+    'Rate per piece',
     'Rate',
     'Unit',
     'Discount',
@@ -155,8 +156,9 @@ function generateTallyReady(pivotRows, fileDate) {
 
     const quantity = safeNumber(row.sum_of_quantity);
     const rate = safeNumber(row.rate);
+    const stockItem = withInventory ? row.fg : '';
     const amount = safeNumber(row.sum_of_base_value);
-
+    const ratePerPiece =  quantity !== 0 ? +(amount / quantity).toFixed(2) : 0;
     const cgst =
       safeNumber(row.sum_of_cgst_amount) ;
 
@@ -192,8 +194,9 @@ function generateTallyReady(pivotRows, fileDate) {
       voucherDate,
       row.tally_ledgers,
       row.final_invoice_no,
-      '',
+      stockItem,
       quantity,
+      ratePerPiece,
       rate,
       '',
       '',
@@ -342,14 +345,15 @@ async function processMyntraMacros(fileBuffers, skuData, stateConfigData, brandN
     let taxAmount = safeNumber(row.tax_amount || row.Tax_Amount || 0);
 
     // Apply sign adjustments: Packed = positive, RT/RTO = negative
-    // if (reportType === 'RT' || reportType === 'RTO') {
-    //   quantity = -Math.abs(quantity);
-    //   baseValue = -Math.abs(baseValue);
-    //   igstAmount = -Math.abs(igstAmount);
-    //   cgstAmount = -Math.abs(cgstAmount);
-    //   sgstAmount = -Math.abs(sgstAmount);
-    //   invoiceAmount = -Math.abs(invoiceAmount);
-    // }
+    if (reportType === 'RT' || reportType === 'RTO') {
+      console.log("reportType", reportType);
+      quantity = -Math.abs(quantity);
+      baseValue = -Math.abs(baseValue);
+      igstAmount = -Math.abs(igstAmount);
+      cgstAmount = -Math.abs(cgstAmount);
+      sgstAmount = -Math.abs(sgstAmount);
+      invoiceAmount = -Math.abs(invoiceAmount);
+    }
 
     // Build working file row
     const workingRow = {
@@ -475,11 +479,11 @@ async function processMyntraMacros(fileBuffers, skuData, stateConfigData, brandN
       'Base Value': workingRow.base_value,
       'File': 'RT',
       // ✅ CORRECT GST BREAKUP
-      'IGST Amount': igstAmount,
-      'CGST Amount': cgstAmount,
-      'SGST Amount': sgstAmount,
+      'IGST Amount': -igstAmount,
+      'CGST Amount': -cgstAmount,
+      'SGST Amount': -sgstAmount,
   
-      'Invoice Amount': workingRow.invoice_amount
+      'Invoice Amount': -workingRow.invoice_amount
     };
   
     if (withInventory) {
@@ -515,11 +519,11 @@ async function processMyntraMacros(fileBuffers, skuData, stateConfigData, brandN
       'Base Value': workingRow.base_value,
       'File': 'RTO',
       // ✅ CORRECT GST BREAKUP
-      'IGST Amount': igstAmount,
-      'CGST Amount': cgstAmount,
-      'SGST Amount': sgstAmount,
+      'IGST Amount': -igstAmount,
+      'CGST Amount': -cgstAmount,
+      'SGST Amount': -sgstAmount,
   
-      'Invoice Amount': workingRow.invoice_amount
+      'Invoice Amount': -workingRow.invoice_amount
     };
   
     if (withInventory) {
@@ -869,7 +873,7 @@ const netPivotData = [
     // STEP 2.5: CREATE TALLY READY SHEET
     // ============================================================
     console.log('Step 2.5: Create Tally Ready sheet');
-    const tallyReadyResult = generateTallyReady(pivotData, date);
+    const tallyReadyResult = generateTallyReady(pivotData, date, withInventory);
     // Build array of arrays: [headers, ...dataRows]
     const tallyReadySheetData = [tallyReadyResult.headers, ...tallyReadyResult.data];
     const tallyReadySheet = XLSX.utils.aoa_to_sheet(tallyReadySheetData);

@@ -1416,7 +1416,7 @@ function generatePivot(process1Data, sourceSheet = null, withInventory = true) {
       safeNumber(row['Sum of Final Taxable Sales Value']);
 
     row['Rate'] =
-      taxableValue > 0
+      taxableValue != 0
         ? +(totalTax / taxableValue).toFixed(6)
         : 0;
   });
@@ -1544,7 +1544,7 @@ function generatePivot(process1Data, sourceSheet = null, withInventory = true) {
   };
 }
 
-function generateTallyReady(pivotRows, fileDate) {
+function generateTallyReady(pivotRows, fileDate, withInventory ) {
   const GST_SLABS = [0.05, 0.12, 0.18];
   const GST_TOLERANCE = 0.01; // ±1%
 
@@ -1606,6 +1606,7 @@ function generateTallyReady(pivotRows, fileDate) {
     'Sales Ledger',
     'Stock Item',
     'Quantity',
+    'Rate per piece',
     'Rate',
     'Unit',
     'Discount',
@@ -1648,11 +1649,11 @@ function generateTallyReady(pivotRows, fileDate) {
     const invoiceNo = row['Final Invoice No.'] || '';
     const shipToState = row['Ship To State'] || '';
     const partyLedger = row['Ship To State Tally Ledger'] || 'Amazon Pay Ledger';
-    const stockItem = row['FGoods'] || '';
+    const stockItem = withInventory ?  row['FG'] : '';
     const quantity = safeNumber(row['Sum of Quantity']);
     const amount = safeNumber(row['Sum of Final Taxable Sales Value']);
     const rate = row['_NormalizedRate'];  // ✅
-
+    const ratePerPiece =  quantity !== 0 ? +(amount / quantity).toFixed(2) : 0;
     const cgst = safeNumber(row['Sum of Final CGST Tax']);
     const sgst = safeNumber(row['Sum of Final SGST Tax']);
     const igst = safeNumber(row['Sum of Final IGST Tax']);
@@ -1675,6 +1676,7 @@ function generateTallyReady(pivotRows, fileDate) {
       'Amazon Pay Ledger',   // Sales Ledger
       stockItem,             // Stock Item
       quantity,              // Quantity
+      ratePerPiece,          // Rate per piece
       rate,                  // Rate
       '',                    // Unit (user will add)
       '',                    // Discount (first)
@@ -2116,7 +2118,7 @@ async function processMacrosB2B(rawFileBuffer, skuFileBuffer, brandName, date, s
     // STEP 5.5: CREATE TALLY READY SHEET
     // ============================================================
     console.log('Step 5.5: Create Tally Ready sheet');
-    const tallyReadyResult = generateTallyReady(pivotData, date);
+    const tallyReadyResult = generateTallyReady(pivotData, date, withInventory);
     // Build array of arrays: [headers, ...dataRows]
     const tallyReadySheetData = [tallyReadyResult.headers, ...tallyReadyResult.data];
     const tallyReadySheet = XLSX.utils.aoa_to_sheet(tallyReadySheetData);

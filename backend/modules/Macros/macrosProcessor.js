@@ -1408,12 +1408,12 @@ p['Sum of Final Amount Receivable'] =
       safeNumber(row['Sum of Final CGST Tax']) +
       safeNumber(row['Sum of Final SGST Tax']) +
       safeNumber(row['Sum of Final IGST Tax']);
-
-    const taxableValue =
+      
+      const taxableValue =
       safeNumber(row['Sum of Final Taxable Sales Value']);
-
+      
     row['Rate'] =
-      taxableValue > 0
+      taxableValue != 0
         ? +(totalTax / taxableValue).toFixed(6)
         : 0;
   });
@@ -1490,7 +1490,7 @@ const totalPivotFinalTaxableSalesValue = pivotRows.reduce(
  * @param {string} fileDate - Date on which file is created (format: YYYY-MM-DD)
  * @returns {Object} - Object with headers array and data array (for aoa_to_sheet)
  */
-function generateTallyReady(pivotRows, fileDate) {
+function generateTallyReady(pivotRows, fileDate, withInventory ) {
   const GST_SLABS = [0.05, 0.12, 0.18];
   const GST_TOLERANCE = 0.01; // ±1%
 
@@ -1499,7 +1499,7 @@ function generateTallyReady(pivotRows, fileDate) {
   
     // Force numeric
     const rate = Number(rawRate);
-  
+    
     // ---------- GST SLAB RANGES ----------
     if (rate >= 0.04 && rate <= 0.06) return 0.05;
     if (rate >= 0.11 && rate <= 0.13) return 0.12;
@@ -1507,7 +1507,7 @@ function generateTallyReady(pivotRows, fileDate) {
   
     // 🚨 Outside expected GST ranges
     console.warn(`⚠ Unmapped GST rate detected: ${rate}`);
-    return 0;
+    return rawRate;
   }
   
 
@@ -1552,6 +1552,7 @@ function generateTallyReady(pivotRows, fileDate) {
     'Sales Ledger',
     'Stock Item',
     'Quantity',
+    'Rate per piece',
     'Rate',
     'Unit',
     'Discount',
@@ -1594,11 +1595,11 @@ function generateTallyReady(pivotRows, fileDate) {
     const invoiceNo = row['Final Invoice No.'] || '';
     const shipToState = row['Ship To State'] || '';
     const partyLedger = row['Ship To State Tally Ledger'] || 'Amazon Pay Ledger';
-    const stockItem = row['FGoods'] || '';
+    const stockItem = withInventory ?  row['FG'] : '';
     const quantity = safeNumber(row['Sum of Quantity']);
     const amount = safeNumber(row['Sum of Final Taxable Sales Value']);
     const rate = row['_NormalizedRate'];  // ✅
-
+    const ratePerPiece =  quantity !== 0 ? +(amount / quantity).toFixed(2) : 0;
     const cgst = safeNumber(row['Sum of Final CGST Tax']);
     const sgst = safeNumber(row['Sum of Final SGST Tax']);
     const igst = safeNumber(row['Sum of Final IGST Tax']);
@@ -1621,6 +1622,7 @@ function generateTallyReady(pivotRows, fileDate) {
       'Amazon Pay Ledger',   // Sales Ledger
       stockItem,             // Stock Item
       quantity,              // Quantity
+      ratePerPiece,          // Rate per piece
       rate,                  // Rate
       '',                    // Unit (user will add)
       '',                    // Discount (first)
@@ -2110,7 +2112,7 @@ async function processMacros(rawFileBuffer, skuFileBuffer, brandName, date, skuD
     // STEP 5.5: CREATE TALLY READY SHEET
     // ============================================================
     console.log('Step 5.5: Create Tally Ready sheet');
-    const tallyReadyResult = generateTallyReady(pivotData, date);
+    const tallyReadyResult = generateTallyReady(pivotData, date, withInventory);
     // Build array of arrays: [headers, ...dataRows]
     const tallyReadySheetData = [tallyReadyResult.headers, ...tallyReadyResult.data];
     const tallyReadySheet = XLSX.utils.aoa_to_sheet(tallyReadySheetData);

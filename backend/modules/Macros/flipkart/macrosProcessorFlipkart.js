@@ -159,8 +159,8 @@ function normalizeStateName(state) {
  * @returns {Object} - { workingFileData, pivotData, afterPivotData, outputWorkbook }
  */
 
-function generateTallyReady(pivotRows, fileDate) {
-
+function generateTallyReady(pivotRows, fileDate, withInventory) {
+console.log()
   const safeNumber = (v) => {
     const n = Number(v);
     return isNaN(n) ? 0 : n;
@@ -186,6 +186,7 @@ function generateTallyReady(pivotRows, fileDate) {
     'Sales Ledger',
     'Stock Item',
     'Quantity',
+    'Rate per piece',
     'Rate',
     'Unit',
     'Discount',
@@ -206,7 +207,8 @@ function generateTallyReady(pivotRows, fileDate) {
     const quantity = safeNumber(row.sum_of_item_quantity);
     const rate = safeNumber(row.rate);
     const amount = safeNumber(row.sum_of_final_taxable_sales_value);
-
+    const ratePerPiece =  quantity !== 0 ? +(amount / quantity).toFixed(2) : 0;
+    const stockItem = withInventory ? row.fg : '';
     const cgst =
       safeNumber(row.sum_of_final_cgst_taxable) +
       safeNumber(row.sum_of_final_cgst_shipping);
@@ -245,8 +247,9 @@ function generateTallyReady(pivotRows, fileDate) {
       voucherDate,
       row.tally_ledgers,
       row.tally_ledgers,
-      '',
+      stockItem,
       quantity,
+      ratePerPiece,
       rate,
       '',
       '',
@@ -288,7 +291,7 @@ async function processFlipkartMacros(rawFileBuffer, skuData, stateConfigData, br
  
     // Build SKU lookup map
     const skuMap = {};
-    if (withInventory) {
+    if (withInventory && console.log("withinventory&&", withInventory)) {
     if (skuData && Array.isArray(skuData)) {
       for (const item of skuData) {
         const sku = String(item.SKU || item.salesPortalSku || '').trim();
@@ -658,7 +661,7 @@ if (stateConfigData && Array.isArray(stateConfigData)) {
   }
 
   // Check for missing SKUs
-  if (withInventory && missingSKUs.size > 0) {
+  if (withInventory && missingSKUs.size > 0 && console.log("withinventory some", withInventory)) {
     const error = new Error(`Some SKUs are missing from the database: ${Array.from(missingSKUs).join(', ')}`);
     error.missingSKUs = Array.from(missingSKUs);
     throw error;
@@ -736,7 +739,7 @@ if (stateConfigData && Array.isArray(stateConfigData)) {
   
     let rate = 0;
   
-    if (taxableValue > 0) {
+    if (taxableValue != 0) {
       rate = totalTax / taxableValue;
   
       // ---------- GST SLAB NORMALIZATION ----------
@@ -943,7 +946,7 @@ if (stateConfigData && Array.isArray(stateConfigData)) {
 
     // ============================================================
     console.log('Step 4.5: Create Tally Ready sheet');
-    const tallyReadyResult = generateTallyReady(pivotData, date);
+    const tallyReadyResult = generateTallyReady(pivotData, date, withInventory);
     // Build array of arrays: [headers, ...dataRows]
     const tallyReadySheetData = [tallyReadyResult.headers, ...tallyReadyResult.data];
     const tallyReadySheet = XLSX.utils.aoa_to_sheet(tallyReadySheetData);
@@ -951,7 +954,7 @@ if (stateConfigData && Array.isArray(stateConfigData)) {
     console.log(`✓ Added tally ready sheet with ${tallyReadyResult.data.length} rows`);
 
 // 5. source-sku
-  if(withInventory) {
+  if(withInventory && console.log("withinventory source-sku", withInventory)) {
     XLSX.utils.book_append_sheet(
         outputWorkbook,
         XLSX.utils.json_to_sheet(
