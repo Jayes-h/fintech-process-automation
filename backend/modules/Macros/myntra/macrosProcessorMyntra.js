@@ -343,17 +343,18 @@ async function processMyntraMacros(fileBuffers, skuData, stateConfigData, brandN
     let gstRate = safeNumber(row.gst_rate || row.tax_rate || row.GST_Rate || 0);
     let shippingCase = String(row.shipping_case || row.Shipping_case || 0);
     let taxAmount = safeNumber(row.tax_amount || row.Tax_Amount || 0);
-
+    let state = String(row.state || '').trim().toLowerCase();
+    let location = String(row.location || '').trim().toLowerCase();
     // Apply sign adjustments: Packed = positive, RT/RTO = negative
-    if (reportType === 'RT' || reportType === 'RTO') {
-      console.log("reportType", reportType);
-      quantity = -Math.abs(quantity);
-      baseValue = -Math.abs(baseValue);
-      igstAmount = -Math.abs(igstAmount);
-      cgstAmount = -Math.abs(cgstAmount);
-      sgstAmount = -Math.abs(sgstAmount);
-      invoiceAmount = -Math.abs(invoiceAmount);
-    }
+    // if (reportType === 'RT' || reportType === 'RTO') {
+    //   console.log("reportType", reportType);
+    //   quantity = -Math.abs(quantity);
+    //   baseValue = -Math.abs(baseValue);
+    //   igstAmount = -Math.abs(igstAmount);
+    //   cgstAmount = -Math.abs(cgstAmount);
+    //   sgstAmount = -Math.abs(sgstAmount);
+    //   invoiceAmount = -Math.abs(invoiceAmount);
+    // }
 
     // Build working file row
     const workingRow = {
@@ -364,6 +365,8 @@ async function processMyntraMacros(fileBuffers, skuData, stateConfigData, brandN
       invoice_number: finalInvoiceNo,
       sku: sku,
       quantity: quantity,
+      state: state,
+      location: location,
       shipping_case: shippingCase,
       gst_rate: gstRate,
       base_Value: baseValue,
@@ -473,17 +476,17 @@ async function processMyntraMacros(fileBuffers, skuData, stateConfigData, brandN
       'Invoice number': workingRow.invoice_number,
       'Debtor Ledger': workingRow.debtor_ledger,
       'SKU': workingRow.sku,
-      'Quantity': workingRow.quantity,
+      'Quantity': -Math.abs(workingRow.quantity),
       'Shipping': workingRow.shipping_case,
       'GST Rate': workingRow.gst_rate,
-      'Base Value': workingRow.base_value,
+      'Base Value': -Math.abs(workingRow.base_value),
       'File': 'RT',
       // ✅ CORRECT GST BREAKUP
-      'IGST Amount': -igstAmount,
-      'CGST Amount': -cgstAmount,
-      'SGST Amount': -sgstAmount,
+      'IGST Amount': -Math.abs(igstAmount),
+      'CGST Amount': -Math.abs(cgstAmount),
+      'SGST Amount': -Math.abs(sgstAmount),
   
-      'Invoice Amount': -workingRow.invoice_amount
+      'Invoice Amount': -Math.abs(workingRow.invoice_amount)
     };
   
     if (withInventory) {
@@ -492,15 +495,18 @@ async function processMyntraMacros(fileBuffers, skuData, stateConfigData, brandN
   
     mainReportData.push(mainRow);
   }
-  
+  let count = 0;
   // Process RTO data (negative values)
   for (const row of rtoData) {
     const workingRow = processRow(row, 'RTO');
     workingFileData.push(workingRow);
-  
     const taxAmount = safeNumber(workingRow.tax_amount);
-    const isInterState =
-      String(workingRow.shipping_case).toLowerCase() === 'interstate';
+    // const isInterState =
+    //   String(workingRow.shipping_case).toLowerCase() === 'interstate';
+
+    const state = String(workingRow.state || '').trim().toLowerCase();
+    const location = String(workingRow.location || '').trim().toLowerCase();
+    const isInterState = state !== location;
   
     const igstAmount = isInterState ? taxAmount : 0;
     const cgstAmount = isInterState ? 0 : taxAmount / 2;
@@ -513,17 +519,17 @@ async function processMyntraMacros(fileBuffers, skuData, stateConfigData, brandN
       'Invoice number': workingRow.invoice_number,
       'Debtor Ledger': workingRow.debtor_ledger,
       'SKU': workingRow.sku,
-      'Quantity': workingRow.quantity,
-      'Shipping': workingRow.shipping_case,
+      'Quantity': -Math.abs(workingRow.quantity),
+      'Shipping': isInterState ? 'InterState' : 'Local',
       'GST Rate': workingRow.gst_rate,
-      'Base Value': workingRow.base_value,
+      'Base Value': -Math.abs(workingRow.base_value),
       'File': 'RTO',
       // ✅ CORRECT GST BREAKUP
-      'IGST Amount': -igstAmount,
-      'CGST Amount': -cgstAmount,
-      'SGST Amount': -sgstAmount,
+      'IGST Amount': -Math.abs(igstAmount),
+      'CGST Amount': -Math.abs(cgstAmount),
+      'SGST Amount': -Math.abs(sgstAmount),
   
-      'Invoice Amount': -workingRow.invoice_amount
+      'Invoice Amount': -Math.abs(workingRow.invoice_amount)
     };
   
     if (withInventory) {
