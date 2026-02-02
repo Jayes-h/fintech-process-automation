@@ -1592,6 +1592,7 @@ function generateTallyReady(pivotRows, fileDate, withInventory ) {
 
   // ---------- BUILD TALLY ROWS (as arrays to handle duplicate column names) ----------
   pivotRows.forEach((row) => {
+    const sellerGstin = row['Seller Gstin'] || '';
     const invoiceNo = row['Final Invoice No.'] || '';
     const shipToState = row['Ship To State'] || '';
     const partyLedger = row['Ship To State Tally Ledger'] || 'Amazon Pay Ledger';
@@ -1614,7 +1615,7 @@ function generateTallyReady(pivotRows, fileDate, withInventory ) {
     // Build row as array in exact order of headers
     const rowArray = [
       voucherDate,           // Vch. Date
-      shipToState,           // Vch. Type
+      sellerGstin,           // Vch. Type
       invoiceNo,             // Vch. No.
       invoiceNo,             // Ref. No. (using invoice no)
       voucherDate,           // Ref. Date
