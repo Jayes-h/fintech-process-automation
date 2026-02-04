@@ -230,6 +230,167 @@ function generateTallyReady(pivotRows, fileDate, withInventory) {
   };
 }
 
+function generateShippingTallyReady(pivotRows, fileDate, withInventory ) {
+
+  function normalizeGstRate(rawRate) {
+    if (!rawRate || rawRate <= 0) return 0;
+  
+    // Force numeric
+    const rate = Number(rawRate);
+    
+    // ---------- GST SLAB RANGES ----------
+    if (rate >= 0.04 && rate <= 0.06) return 0.05;
+    if (rate >= 0.11 && rate <= 0.13) return 0.12;
+    if (rate >= 0.17 && rate <= 0.19) return 0.18;
+  
+    // 🚨 Outside expected GST ranges
+    console.warn(`⚠ Unmapped GST rate detected: ${rate}`);
+    return rawRate;
+  }
+
+  function addShipToVchNo(vchNo) {
+    if (!vchNo || typeof vchNo !== 'string') return vchNo;
+  
+    // Insert -SHIP after first 3 characters
+    return vchNo.slice(0, 3) + '-SHIP' + vchNo.slice(3);
+  }
+  
+  
+
+   // ---------- SAFE NUMBER ----------
+   const safeNumber = (value) => {
+    if (value === null || value === undefined || value === '') return 0;
+    if (typeof value === 'string') {
+      const cleaned = value.replace(/,/g, '').trim();
+      const num = Number(cleaned);
+      return isNaN(num) ? 0 : num;
+    }
+    const num = Number(value);
+    return isNaN(num) ? 0 : num;
+  };
+
+  // ---------- NORMALIZE GST RATE IN PIVOT ROWS ----------
+  pivotRows.forEach(row => {
+    const rawRate = safeNumber(row.rate);
+    row['_NormalizedRate'] = normalizeGstRate(rawRate);
+  });
+
+    // ---------- COLLECT UNIQUE GST RATES ----------
+  const uniqueRatesSet = new Set();
+
+  pivotRows.forEach(row => {
+    const rate = row['_NormalizedRate'];
+    if (rate > 0) {
+      uniqueRatesSet.add(rate);
+    }
+  });
+
+  const uniqueRates = Array.from(uniqueRatesSet).sort((a, b) => a - b);
+
+  // Define headers (including duplicate Discount column)
+  const headers = [
+    'Vch. Date',
+    'Vch. Type',
+    'Vch. No.',
+    'Ref. No.',
+    'Ref. Date',
+    'Party Ledger',
+    'Sales Ledger',
+    'Rate',
+    'Amount',
+  ];
+
+      // ---------- ADD GST HEADERS PER RATE ----------
+    uniqueRates.forEach(rate => {
+      headers.push(`CGST ${rate / 2}`);
+      headers.push(`SGST ${rate / 2}`);
+      headers.push(`IGST ${rate}`);
+    });
+  const tallyRows = [];
+
+ 
+  // ---------- PARSE FILE DATE ----------
+  // fileDate format: YYYY-MM-DD, convert to Date object
+  let voucherDate;
+
+  if (fileDate) {
+    const parsedDate = new Date(fileDate);
+  
+    if (!isNaN(parsedDate.getTime())) {
+      const year = parsedDate.getFullYear();
+      const month = parsedDate.getMonth(); // 0-based
+  
+      // ✅ Last date of file month
+      voucherDate = new Date(year, month + 1, 0);
+    } else {
+      // fallback
+      voucherDate = new Date();
+    }
+  } else {
+    voucherDate = new Date();
+  }
+
+  // ---------- BUILD TALLY ROWS (as arrays to handle duplicate column names) ----------
+  pivotRows.forEach((row) => {
+    const sellerGstin = row.seller_gstin || '';
+    const rawInvoiceNo = row.final_invoice_no || '';
+    const invoiceNo = addShipToVchNo(rawInvoiceNo);
+    const shipToState = row.seller_state || '';
+    const partyLedger = row.tally_ledgers || 'Amazon Pay Ledger';
+    const stockItem = withInventory ?  row.fg : '';
+    const quantity = safeNumber(row.sum_of_item_quantity);
+    const amount = safeNumber(row.sum_of_base_value);
+    const rate = row.rate;  // ✅
+    const cgst = safeNumber(row.sum_of_cgst_amount);
+    const sgst = safeNumber(row.sum_of_sgst_amount);
+    const igst = safeNumber(row.sum_of_igst_amount);
+    
+
+    // Skip rows without invoice number
+    if (!invoiceNo) {
+      console.warn(`⚠ Skipping tally row: Missing Invoice No. for state: ${shipToState}`);
+      return;
+    }
+
+    // Build row as array in exact order of headers
+    const rowArray = [
+      voucherDate,           // Vch. Date
+      sellerGstin,           // Vch. Type
+      invoiceNo,             // Vch. No.
+      invoiceNo,             // Ref. No. (using invoice no)
+      voucherDate,           // Ref. Date
+      partyLedger,           // Party Ledger
+      'Amazon Pay Ledger',   // Sales Ledger
+      rate,                  // Rate
+      amount,                // Amount
+    ];
+
+    // ---------- GST VALUES PER RATE ----------
+  uniqueRates.forEach(r => {
+    if (r === rate) {
+      rowArray.push(cgst); // CGST r/2
+      rowArray.push(sgst); // SGST r/2
+      rowArray.push(igst); // IGST r
+    } else {
+      rowArray.push(0);
+      rowArray.push(0);
+      rowArray.push(0);
+    }
+  });
+
+    tallyRows.push(rowArray);
+  });
+
+  console.log(`✓ Generated ${tallyRows.length} tally ready rows from ${pivotRows.length} pivot rows`);
+
+  // Return as array of arrays format for aoa_to_sheet
+  return {
+    headers: headers,
+    data: tallyRows
+  };
+}
+
+
 
 /**
  * Process Myntra macros - handles 3 CSV files (RTO, Packed, RT)
@@ -886,6 +1047,19 @@ const netPivotData = [
     XLSX.utils.book_append_sheet(outputWorkbook, tallyReadySheet, 'tally ready');
     console.log(`✓ Added tally ready sheet with ${tallyReadyResult.data.length} rows`);
     
+        
+    // ============================================================
+    console.log('Step 2.5: Create shipping ready sheet');
+    const shippingtallyReadyResult = generateShippingTallyReady(pivotData, date, withInventory);
+    // Build array of arrays: [headers, ...dataRows]
+    const shippingtallyReadySheetData = [shippingtallyReadyResult.headers, ...shippingtallyReadyResult.data];
+    const shippingtallyReadySheet = XLSX.utils.aoa_to_sheet(shippingtallyReadySheetData);
+    XLSX.utils.book_append_sheet(outputWorkbook, shippingtallyReadySheet, 'shipping tally ready');
+    console.log(`✓ Added shipping tally ready sheet with ${shippingtallyReadyResult.data.length} rows`);
+
+
+
+
 
   // 3. Shipped sheet (from Packed data)
   const shippedSheet = XLSX.utils.json_to_sheet(packedData);

@@ -283,6 +283,166 @@ console.log()
   };
 }
 
+function generateShippingTallyReady(pivotRows, fileDate, withInventory ) {
+
+  function normalizeGstRate(rawRate) {
+    if (!rawRate || rawRate <= 0) return 0;
+  
+    // Force numeric
+    const rate = Number(rawRate);
+    
+    // ---------- GST SLAB RANGES ----------
+    if (rate >= 0.04 && rate <= 0.06) return 0.05;
+    if (rate >= 0.11 && rate <= 0.13) return 0.12;
+    if (rate >= 0.17 && rate <= 0.19) return 0.18;
+  
+    // 🚨 Outside expected GST ranges
+    console.warn(`⚠ Unmapped GST rate detected: ${rate}`);
+    return rawRate;
+  }
+
+  function addShipToVchNo(vchNo) {
+    if (!vchNo || typeof vchNo !== 'string') return vchNo;
+  
+    // Insert -SHIP after first 3 characters
+    return vchNo.slice(0, 3) + '-SHIP' + vchNo.slice(3);
+  }
+  
+  
+
+   // ---------- SAFE NUMBER ----------
+   const safeNumber = (value) => {
+    if (value === null || value === undefined || value === '') return 0;
+    if (typeof value === 'string') {
+      const cleaned = value.replace(/,/g, '').trim();
+      const num = Number(cleaned);
+      return isNaN(num) ? 0 : num;
+    }
+    const num = Number(value);
+    return isNaN(num) ? 0 : num;
+  };
+
+  // ---------- NORMALIZE GST RATE IN PIVOT ROWS ----------
+  pivotRows.forEach(row => {
+    const rawRate = safeNumber(row.rate);
+    row['_NormalizedRate'] = normalizeGstRate(rawRate);
+  });
+
+    // ---------- COLLECT UNIQUE GST RATES ----------
+  const uniqueRatesSet = new Set();
+
+  pivotRows.forEach(row => {
+    const rate = row['_NormalizedRate'];
+    if (rate > 0) {
+      uniqueRatesSet.add(rate);
+    }
+  });
+
+  const uniqueRates = Array.from(uniqueRatesSet).sort((a, b) => a - b);
+
+  // Define headers (including duplicate Discount column)
+  const headers = [
+    'Vch. Date',
+    'Vch. Type',
+    'Vch. No.',
+    'Ref. No.',
+    'Ref. Date',
+    'Party Ledger',
+    'Sales Ledger',
+    'Rate',
+    'Amount',
+  ];
+
+      // ---------- ADD GST HEADERS PER RATE ----------
+    uniqueRates.forEach(rate => {
+      headers.push(`CGST ${rate / 2}`);
+      headers.push(`SGST ${rate / 2}`);
+      headers.push(`IGST ${rate}`);
+    });
+  const tallyRows = [];
+
+ 
+  // ---------- PARSE FILE DATE ----------
+  // fileDate format: YYYY-MM-DD, convert to Date object
+  let voucherDate;
+
+  if (fileDate) {
+    const parsedDate = new Date(fileDate);
+  
+    if (!isNaN(parsedDate.getTime())) {
+      const year = parsedDate.getFullYear();
+      const month = parsedDate.getMonth(); // 0-based
+  
+      // ✅ Last date of file month
+      voucherDate = new Date(year, month + 1, 0);
+    } else {
+      // fallback
+      voucherDate = new Date();
+    }
+  } else {
+    voucherDate = new Date();
+  }
+
+  // ---------- BUILD TALLY ROWS (as arrays to handle duplicate column names) ----------
+  pivotRows.forEach((row) => {
+    const sellerGstin = row.seller_gstin || '';
+    const rawInvoiceNo = row.final_invoice_no || '';
+    const invoiceNo = addShipToVchNo(rawInvoiceNo);
+    const shipToState = row.seller_state || '';
+    const partyLedger = row.tally_ledgers || 'Amazon Pay Ledger';
+    const stockItem = withInventory ?  row.fg : '';
+    const quantity = safeNumber(row.sum_of_item_quantity);
+    const amount = safeNumber(row.sum_of_final_taxable_sales_value);
+    const rate = row.rate;  // ✅
+    const cgst = safeNumber(row.sum_of_final_cgst_taxable);
+    const sgst = safeNumber(row.sum_of_final_sgst_taxable);
+    const igst = safeNumber(row.sum_of_final_igst_taxable);
+    
+
+    // Skip rows without invoice number
+    if (!invoiceNo) {
+      console.warn(`⚠ Skipping tally row: Missing Invoice No. for state: ${shipToState}`);
+      return;
+    }
+
+    // Build row as array in exact order of headers
+    const rowArray = [
+      voucherDate,           // Vch. Date
+      sellerGstin,           // Vch. Type
+      invoiceNo,             // Vch. No.
+      invoiceNo,             // Ref. No. (using invoice no)
+      voucherDate,           // Ref. Date
+      partyLedger,           // Party Ledger
+      'Amazon Pay Ledger',   // Sales Ledger
+      rate,                  // Rate
+      amount,                // Amount
+    ];
+
+    // ---------- GST VALUES PER RATE ----------
+  uniqueRates.forEach(r => {
+    if (r === rate) {
+      rowArray.push(cgst); // CGST r/2
+      rowArray.push(sgst); // SGST r/2
+      rowArray.push(igst); // IGST r
+    } else {
+      rowArray.push(0);
+      rowArray.push(0);
+      rowArray.push(0);
+    }
+  });
+
+    tallyRows.push(rowArray);
+  });
+
+  console.log(`✓ Generated ${tallyRows.length} tally ready rows from ${pivotRows.length} pivot rows`);
+
+  // Return as array of arrays format for aoa_to_sheet
+  return {
+    headers: headers,
+    data: tallyRows
+  };
+}
+
 
 async function processFlipkartMacros(rawFileBuffer, skuData, stateConfigData, brandName, date, withInventory ) {
   console.log('=== FLIPKART MACROS PROCESSING ===');
@@ -290,20 +450,22 @@ async function processFlipkartMacros(rawFileBuffer, skuData, stateConfigData, br
 
  
     // Build SKU lookup map
+   
     const skuMap = {};
-    if (withInventory && console.log("withinventory&&", withInventory)) {
-    if (skuData && Array.isArray(skuData)) {
-      for (const item of skuData) {
-        const sku = String(item.SKU || item.salesPortalSku || '').trim();
-        const fg = item.FG || item.tallyNewSku || '';
-        if (sku) {
-          skuMap[sku] = fg;
+
+    if(withInventory){
+        console.log("skuData", skuData);
+      if(skuData && Array.isArray(skuData)){
+        for (const item of skuData){
+          const sku = String(item.SKU || item.salesPortalSku || '').trim();
+          const fg = item.FG || item.tallyNewSku || '';
+          if (sku){
+            skuMap[sku] = fg;
+          }
         }
       }
-    }
     console.log(`SKU map loaded with ${Object.keys(skuMap).length} entries`);
   }
-
 
   // Build state config lookup map (by normalized state name)
 const stateConfigMap = {};
@@ -431,7 +593,16 @@ if (stateConfigData && Array.isArray(stateConfigData)) {
     const finalGstRate = igstRate > 0 ? igstRate : cgstRate;
 
     // Conversion rate = Final GST rate != 12 ? 1.18 : 1.12
-    const conversionRate = finalGstRate !== 12 ? 1.18 : 1.12;
+    // const conversionRate = finalGstRate !== 12 ? 1.18 : 1.12;
+    let conversionRate = 1; // default fallback
+
+    if (finalGstRate === 2.5 || finalGstRate === 5) {
+      conversionRate = 1.05;
+    } else if (finalGstRate === 12 || finalGstRate === 6) {
+      conversionRate = 1.12;
+    } else if (finalGstRate === 9 || finalGstRate === 18) {
+      conversionRate = 1.18;
+    }
 
     // Final Taxable sales value = Final Price after discount / Conversion rate
     // Final Taxable sales value = Final Price after discount / Conversion rate
@@ -678,7 +849,8 @@ if (stateConfigData && Array.isArray(stateConfigData)) {
     const keyObject = {
       seller_gstin: row.seller_gstin || '',
       tally_ledgers: row.tally_ledgers || '',
-      final_invoice_no: row.final_invoice_no || ''
+      final_invoice_no: row.final_invoice_no || '',
+      rate: row.final_gst_rate || ''
     };
 
     if (withInventory) {
@@ -693,7 +865,7 @@ if (stateConfigData && Array.isArray(stateConfigData)) {
         seller_gstin: row.seller_gstin,
         tally_ledgers: row.tally_ledgers,
         final_invoice_no: row.final_invoice_no,
-        rate: 0,
+        rate: row.final_gst_rate,
         sum_of_item_quantity: 0,
         sum_of_final_taxable_sales_value: 0,
         sum_of_final_cgst_taxable: 0,
@@ -727,40 +899,41 @@ if (stateConfigData && Array.isArray(stateConfigData)) {
   const pivotData = Object.values(pivotMap);
   console.log(`Pivot data: ${pivotData.length} rows`);
 
-  pivotData.forEach(row => {
+  // pivotData.forEach(row => {
 
-    const totalTax =
-      safeNumber(row.sum_of_final_cgst_taxable) +
-      safeNumber(row.sum_of_final_sgst_taxable) +
-      safeNumber(row.sum_of_final_igst_taxable);
+  //   const totalTax =
+  //     safeNumber(row.sum_of_final_cgst_taxable) +
+  //     safeNumber(row.sum_of_final_sgst_taxable) +
+  //     safeNumber(row.sum_of_final_igst_taxable);
   
-    const taxableValue =
-      safeNumber(row.sum_of_final_taxable_sales_value);
+  //   const taxableValue =
+  //     safeNumber(row.sum_of_final_taxable_sales_value);
   
-    let rate = 0;
+  //   let rate = 0;
   
-    if (taxableValue != 0) {
-      rate = totalTax / taxableValue;
+  //   if (taxableValue != 0) {
+  //     rate = totalTax / taxableValue;
   
-      // ---------- GST SLAB NORMALIZATION ----------
-      if (rate >= 0.04 && rate <= 0.06) {
-        rate = 0.05;
-      } else if (rate >= 0.11 && rate <= 0.13) {
-        rate = 0.12;
-      } else if (rate >= 0.17 && rate <= 0.19) {
-        rate = 0.18;
-      } else {
-        rate = 0; // outside expected GST slabs
-      }
-    }
+  //     // ---------- GST SLAB NORMALIZATION ----------
+  //     if (rate >= 0.04 && rate <= 0.06) {
+  //       rate = 0.05;
+  //     } else if (rate >= 0.11 && rate <= 0.13) {
+  //       rate = 0.12;
+  //     } else if (rate >= 0.17 && rate <= 0.19) {
+  //       rate = 0.18;
+  //     } else {
+  //       rate = 0; // outside expected GST slabs
+  //     }
+  //   }
   
-    row.rate = +rate.toFixed(2);
-  });
+  //   row.rate = +rate.toFixed(2);
+  // });
     
 // ==========================
 // Generate After-Pivot
 // ==========================
-  const afterPivotData = pivotData.map(row => {
+ 
+const afterPivotData = pivotData.map(row => {
     const result = {
       seller_gstin: row.seller_gstin,
       tally_ledgers: row.tally_ledgers,
@@ -952,6 +1125,17 @@ if (stateConfigData && Array.isArray(stateConfigData)) {
     const tallyReadySheet = XLSX.utils.aoa_to_sheet(tallyReadySheetData);
     XLSX.utils.book_append_sheet(outputWorkbook, tallyReadySheet, 'tally ready');
     console.log(`✓ Added tally ready sheet with ${tallyReadyResult.data.length} rows`);
+
+    
+    // ============================================================
+    console.log('Step 4.56: Create shipping ready sheet');
+    const shippingtallyReadyResult = generateShippingTallyReady(pivotData, date, withInventory);
+    // Build array of arrays: [headers, ...dataRows]
+    const shippingtallyReadySheetData = [shippingtallyReadyResult.headers, ...shippingtallyReadyResult.data];
+    const shippingtallyReadySheet = XLSX.utils.aoa_to_sheet(shippingtallyReadySheetData);
+    XLSX.utils.book_append_sheet(outputWorkbook, shippingtallyReadySheet, 'shipping tally ready');
+    console.log(`✓ Added shipping tally ready sheet with ${shippingtallyReadyResult.data.length} rows`);
+
 
 // 5. source-sku
   if(withInventory && console.log("withinventory source-sku", withInventory)) {
