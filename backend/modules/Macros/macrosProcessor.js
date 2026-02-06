@@ -1308,16 +1308,18 @@ function generatePivot(process1Data, sourceSheet = null, withInventory = true, s
     return JSON.stringify({
       gstin: normalizeString(row['Seller Gstin']),
       shipToState: normalizeString(row['Ship To State']),
+      rate: safeNumber(row['Cgst Rate'])+safeNumber(row['Igst Rate'])+safeNumber(row['Sgst Rate']),
+      hsncode: normalizeString(row['Hsn/sac'])
     });
   };
 
-  
   
   // ---------- BUILD PIVOT ----------
   process1Data.forEach((row) => {
     const gstin = normalizeString(row['Seller Gstin']);
     const shipToState = normalizeString(row['Ship To State']);
     const hsncode = normalizeString(row['Hsn/sac']);
+    const rate = safeNumber(row['Cgst Rate'])+safeNumber(row['Igst Rate'])+safeNumber(row['Sgst Rate']);
     if (!gstin) return;
 
     const groupKey = createGroupKey(row);
@@ -1329,8 +1331,9 @@ function generatePivot(process1Data, sourceSheet = null, withInventory = true, s
             'Ship To State': shipToState,
             'Final Invoice No.': '',                     // filled later
             'Ship To State Tally Ledger': '',            // filled later
+            'Hnscode': hsncode,
             'FG': normalizeString(row['FG']),
-            'Rate': 0,
+            'Rate': rate,
             'Sum of Quantity': 0,
             'Sum of Final Taxable Sales Value': 0,
             'Sum of Final CGST Tax': 0,
@@ -1352,7 +1355,7 @@ function generatePivot(process1Data, sourceSheet = null, withInventory = true, s
             'Ship To State Tally Ledger': '',            // filled later
             'Hsn/sac': hsncode,
             'Sum of Quantity': 0,
-            'Rate': 0,
+            'Rate': rate,
             'Sum of Final Taxable Sales Value': 0,
             'Sum of Final CGST Tax': 0,
             'Sum of Final SGST Tax': 0,
@@ -1405,20 +1408,20 @@ p['Sum of Final Amount Receivable'] =
   const pivotRows = Object.values(pivot);
 
   // ---------- DERIVE RATE (AS PER YOUR FORMULA) ----------
-  pivotRows.forEach(row => {
-    const totalTax =
-      safeNumber(row['Sum of Final CGST Tax']) +
-      safeNumber(row['Sum of Final SGST Tax']) +
-      safeNumber(row['Sum of Final IGST Tax']);
+  // pivotRows.forEach(row => {
+  //   const totalTax =
+  //     safeNumber(row['Sum of Final CGST Tax']) +
+  //     safeNumber(row['Sum of Final SGST Tax']) +
+  //     safeNumber(row['Sum of Final IGST Tax']);
       
-      const taxableValue =
-      safeNumber(row['Sum of Final Taxable Sales Value']);
+  //     const taxableValue =
+  //     safeNumber(row['Sum of Final Taxable Sales Value']);
       
-    row['Rate'] =
-      taxableValue != 0
-        ? +(totalTax / taxableValue).toFixed(6)
-        : 0;
-  });
+  //   row['Rate'] =
+  //     taxableValue != 0
+  //       ? +(totalTax / taxableValue).toFixed(6)
+  //       : 0;
+  // });
 
   // ---------- DERIVE INVOICE & LEDGER (EXCEL STYLE) ----------
   if (Array.isArray(stateConfigData)) {
@@ -1817,116 +1820,128 @@ function generateShippingTallyReady(pivotRows, fileDate, withInventory ) {
   };
 }
 
-// function generateGstnHsn(pivotRows, fileDate, withInventory ) {
+function generateGstnHsn(pivotRows, fileDate, withInventory) {
 
-//   function normalizeGstRate(rawRate) {
-//     if (!rawRate || rawRate <= 0) return 0;
-  
-//     // Force numeric
-//     const rate = Number(rawRate);
-    
-//     // ---------- GST SLAB RANGES ----------
-//     if (rate >= 0.04 && rate <= 0.06) return 0.05;
-//     if (rate >= 0.11 && rate <= 0.13) return 0.12;
-//     if (rate >= 0.17 && rate <= 0.19) return 0.18;
-  
-//     // 🚨 Outside expected GST ranges
-//     console.warn(`⚠ Unmapped GST rate detected: ${rate}`);
-//     return rawRate;
-//   }
-  
+  function normalizeGstRate(rawRate) {
+    if (!rawRate || rawRate <= 0) return 0;
 
-//    // ---------- SAFE NUMBER ----------
-//    const safeNumber = (value) => {
-//     if (value === null || value === undefined || value === '') return 0;
-//     if (typeof value === 'string') {
-//       const cleaned = value.replace(/,/g, '').trim();
-//       const num = Number(cleaned);
-//       return isNaN(num) ? 0 : num;
-//     }
-//     const num = Number(value);
-//     return isNaN(num) ? 0 : num;
-//   };
+    const rate = Number(rawRate);
 
-//   // ---------- NORMALIZE GST RATE IN PIVOT ROWS ----------
-//   pivotRows.forEach(row => {
-//     const rawRate = safeNumber(row['Rate']);
-//     row['_NormalizedRate'] = normalizeGstRate(rawRate);
-//   });
+    if (rate >= 0.04 && rate <= 0.06) return 0.05;
+    if (rate >= 0.11 && rate <= 0.13) return 0.12;
+    if (rate >= 0.17 && rate <= 0.19) return 0.18;
 
-//   //   // ---------- COLLECT UNIQUE GST RATES ----------
-//   // const uniqueRatesSet = new Set();
+    console.warn(`⚠ Unmapped GST rate detected: ${rate}`);
+    return rawRate;
+  }
 
-//   // pivotRows.forEach(row => {
-//   //   const rate = row['_NormalizedRate'];
-//   //   if (rate > 0) {
-//   //     uniqueRatesSet.add(rate);
-//   //   }
-//   // });
+  const safeNumber = (value) => {
+    if (value === null || value === undefined || value === '') return 0;
+    if (typeof value === 'string') {
+      const cleaned = value.replace(/,/g, '').trim();
+      const num = Number(cleaned);
+      return isNaN(num) ? 0 : num;
+    }
+    const num = Number(value);
+    return isNaN(num) ? 0 : num;
+  };
 
-//   // const uniqueRates = Array.from(uniqueRatesSet).sort((a, b) => a - b);
+  const normalizeString = (v) =>
+    v === null || v === undefined ? '' : String(v).trim();
 
-//   // Define headers (including duplicate Discount column)
-//   const headers = [
-//     'Seller Gstin',
-//     'HSN Code',
-//     'Rate',
-//     'Sum Of Quantity',
-//     'Sum Of Final Taxable Sales Value',
-//     'Sum Of CGST',
-//     'Sum Of SGST',
-//     'Sum Of IGST',
-//   ];
+  // ---------- NORMALIZE GST RATE ----------
+  pivotRows.forEach(row => {
+    row['_NormalizedRate'] = normalizeGstRate(safeNumber(row['Rate']));
+  });
 
-//   const tallyRows = [];
+  // ---------- GROUP KEY (same style as your pivot) ----------
+  const createGroupKey = (row) => {
+    return JSON.stringify({
+      gstin: normalizeString(row['Seller Gstin']),
+      hsn: normalizeString(row['Hsn/sac']),
+    });
+  };
 
- 
-//   // ---------- BUILD TALLY ROWS (as arrays to handle duplicate column names) ----------
-//   pivotRows.forEach((row) => {
-//     const sellerGstin = row['Seller Gstin'] || '';
-//     // const invoiceNo = row['Final Invoice No.'] || '';
-//     // const shipToState = row['Ship To State'] || '';
-//     // const partyLedger = row['Ship To State Tally Ledger'] || 'Amazon Pay Ledger';
-//     // const stockItem = withInventory ?  row['FG'] : '';
-//     const quantity = safeNumber(row['Sum of Quantity']);
-//     const amount = safeNumber(row['Sum of Final Taxable Sales Value']);
-//     const rate = row['_NormalizedRate'];  // ✅
-//     const hsncode = row['Hsn/sac'] || '';
-//     // const ratePerPiece =  quantity !== 0 ? +(amount / quantity).toFixed(2) : 0;
-//     const cgst = safeNumber(row['Sum of Final CGST Tax']);
-//     const sgst = safeNumber(row['Sum of Final SGST Tax']);
-//     const igst = safeNumber(row['Sum of Final IGST Tax']);
-    
+  const headers = [
+    'Seller Gstin',
+    'HSN Code',
+    'Rate',
+    'Sum Of Quantity',
+    'Sum Of Final Taxable Sales Value',
+    'Sum Of CGST Tax',
+    'Sum Of SGST Tax',
+    'Sum Of IGST Tax',
+    'Sum Of Final Taxable Shipping Value',
+    'Sum Of Final Shipping CGST Tax',
+    'Sum Of Final Shipping SGST Tax',
+    'Sum Of Final Shipping IGST Tax',
+  ];
 
-//     // Skip rows without invoice number
-//     // if (!invoiceNo) {
-//     //   console.warn(`⚠ Skipping tally row: Missing Invoice No. for state: ${shipToState}`);
-//     //   return;
-//     // }
+  // ---------- GROUPED OBJECT ----------
+  const grouped = {};
 
-//     // Build row as array in exact order of headers
-//     const rowArray = [
-//       sellerGstin,           // Vch. Type
-//       hsncode,
-//       rate,                  // Rate
-//       quantity,              // Quantity
-//       amount,                // Amount
-//       cgst,
-//       sgst,
-//       igst,
-//     ];
+  pivotRows.forEach((row) => {
+    const gstin = normalizeString(row['Seller Gstin']);
+    const hsn = normalizeString(row['Hsn/sac']);
+    const rate = row['_NormalizedRate'];
 
-//     tallyRows.push(rowArray);
-//   });
+    if (!gstin || !hsn) return;
 
-//   console.log(`✓ Generated ${tallyRows.length} tally ready rows from ${pivotRows.length} pivot rows`);
+    const groupKey = createGroupKey(row);
 
-//   // Return as array of arrays format for aoa_to_sheet
-//   return {
-//     headers: headers,
-//     data: tallyRows
-//   };
-// }
+    if (!grouped[groupKey]) {
+      grouped[groupKey] = {
+        'Seller Gstin': gstin,
+        'HSN Code': hsn,
+        'Rate': rate,
+        'Sum Of Quantity': 0,
+        'Sum Of Final Taxable Sales Value': 0,
+        'Sum Of CGST Tax': 0,
+        'Sum Of SGST Tax': 0,
+        'Sum Of IGST Tax': 0,
+        'Sum Of Final Taxable Shipping Value': 0,
+        'Sum Of Final Shipping CGST Tax': 0,
+        'Sum Of Final Shipping SGST Tax': 0,
+        'Sum Of Final Shipping IGST Tax': 0
+      };
+    }
+
+    const g = grouped[groupKey];
+
+    g['Sum Of Quantity'] += safeNumber(row['Sum of Quantity']);
+    g['Sum Of Final Taxable Sales Value'] += safeNumber(row['Sum of Final Taxable Sales Value']);
+    g['Sum Of CGST Tax'] += safeNumber(row['Sum of Final CGST Tax']);
+    g['Sum Of SGST Tax'] += safeNumber(row['Sum of Final SGST Tax']);
+    g['Sum Of IGST Tax'] += safeNumber(row['Sum of Final IGST Tax']);
+    g['Sum Of Final Taxable Shipping Value'] += safeNumber(row['Sum of Final Taxable Shipping Value']);
+    g['Sum Of Final Shipping CGST Tax'] += safeNumber(row['Sum of Final Shipping CGST Tax']);
+    g['Sum Of Final Shipping SGST Tax'] += safeNumber(row['Sum of Final Shipping SGST Tax']);
+    g['Sum Of Final Shipping IGST Tax'] += safeNumber(row['Sum of Final Shipping IGST Tax']);
+  });
+
+  // ---------- CONVERT TO ARRAY OF ARRAYS ----------
+  const tallyRows = Object.values(grouped).map(row => ([
+    row['Seller Gstin'],
+    row['HSN Code'],
+    row['Rate'],
+    row['Sum Of Quantity'],
+    row['Sum Of Final Taxable Sales Value'],
+    row['Sum Of CGST Tax'],
+    row['Sum Of SGST Tax'],
+    row['Sum Of IGST Tax'],
+    row['Sum Of Final Taxable Shipping Value'],
+    row['Sum Of Final Shipping CGST Tax'],
+    row['Sum Of Final Shipping SGST Tax'],
+    row['Sum Of Final Shipping IGST Tax']
+  ]));
+
+  console.log(`✓ Generated ${tallyRows.length} GSTN-HSN grouped rows`);
+
+  return {
+    headers,
+    data: tallyRows
+  };
+}
 
 /**
  * Main processing function
@@ -2395,15 +2410,15 @@ async function processMacros(rawFileBuffer, skuFileBuffer, brandName, date, skuD
         // ============================================================
     // STEP 5.6: CREATE HSN SAC READY SHEET
     // ============================================================
-    // if(!withInventory){
-    // console.log('Step 5.6: Create Hsn/sac sheet');
-    // const gstrhsnResult = generateGstnHsn(pivotData, date, withInventory);
-    // // Build array of arrays: [headers, ...dataRows]
-    // const gstrhsnSheetData = [gstrhsnResult.headers, ...gstrhsnResult.data];
-    // const gstrhsnSheet = XLSX.utils.aoa_to_sheet(gstrhsnSheetData);
-    // XLSX.utils.book_append_sheet(outputWorkbook, gstrhsnSheet, 'GSTR-HSN');
-    // console.log(`✓ Added tally ready sheet with ${gstrhsnResult.data.length} rows`);
-    // }
+    if(!withInventory){
+    console.log('Step 5.6: Create Hsn/sac sheet');
+    const gstrhsnResult = generateGstnHsn(pivotData, date, withInventory);
+    // Build array of arrays: [headers, ...dataRows]
+    const gstrhsnSheetData = [gstrhsnResult.headers, ...gstrhsnResult.data];
+    const gstrhsnSheet = XLSX.utils.aoa_to_sheet(gstrhsnSheetData);
+    XLSX.utils.book_append_sheet(outputWorkbook, gstrhsnSheet, 'GSTR-HSN');
+    console.log(`✓ Added tally ready sheet with ${gstrhsnResult.data.length} rows`);
+    }
 
     console.log('Step 5.56: Create shipping tally ready sheet');
     const shippingtallyReadyResult = generateShippingTallyReady(pivotData, date, withInventory);
