@@ -533,6 +533,196 @@ class FormulaEvaluator {
 }
 
 /**
+ * Get column letter from column number (1 = A, 2 = B, etc.)
+ */
+function getColLetterFromNum(colNum) {
+  let result = '';
+  let num = colNum;
+  while (num > 0) {
+    num--;
+    result = String.fromCharCode(65 + (num % 26)) + result;
+    num = Math.floor(num / 26);
+  }
+  return result;
+}
+
+/**
+ * Convert ExcelJS worksheet to XLSX format with formulas preserved
+ * @param {Worksheet} ws - ExcelJS worksheet
+ * @returns {Object} - XLSX worksheet object with formulas
+ */
+function excelJSToXLSXWithFormulas(ws) {
+  const xlsxSheet = {};
+  const maxRow = ws.actualRowCount || ws.rowCount || 1;
+  const maxCol = ws.columnCount || 200;
+  
+  // Process all cells
+  for (let rowNum = 1; rowNum <= maxRow; rowNum++) {
+    const row = ws.getRow(rowNum);
+    for (let colNum = 1; colNum <= maxCol; colNum++) {
+      const cell = row.getCell(colNum);
+      const colLetter = getColLetterFromNum(colNum);
+      const cellAddress = `${colLetter}${rowNum}`;
+      
+      if (cell && (cell.value !== null && cell.value !== undefined || cell.formula)) {
+        const xlsxCell = {};
+        
+        // If cell has a formula, preserve it
+        if (cell.formula) {
+          xlsxCell.f = cell.formula; // Formula string
+          // Also store the calculated value
+          try {
+            const cellValue = cell.value;
+            if (cellValue !== null && cellValue !== undefined) {
+              if (typeof cellValue === 'number') {
+                xlsxCell.v = cellValue;
+                xlsxCell.t = 'n';
+              } else if (cellValue instanceof Date) {
+                xlsxCell.v = cellValue;
+                xlsxCell.t = 'd';
+              } else {
+                xlsxCell.v = String(cellValue);
+                xlsxCell.t = 's';
+              }
+            }
+          } catch (e) {
+            // If we can't get value, formula will be enough
+          }
+        } else {
+          // Regular value cell
+          const cellValue = cell.value;
+          if (cellValue !== null && cellValue !== undefined) {
+            if (typeof cellValue === 'number') {
+              xlsxCell.v = cellValue;
+              xlsxCell.t = 'n';
+            } else if (cellValue instanceof Date) {
+              xlsxCell.v = cellValue;
+              xlsxCell.t = 'd';
+            } else {
+              xlsxCell.v = String(cellValue);
+              xlsxCell.t = 's';
+            }
+          }
+        }
+        
+        if (Object.keys(xlsxCell).length > 0) {
+          xlsxSheet[cellAddress] = xlsxCell;
+        }
+      }
+    }
+  }
+  
+  // Set the range
+  if (maxRow > 0 && maxCol > 0) {
+    const endCol = getColLetterFromNum(maxCol);
+    xlsxSheet['!ref'] = `A1:${endCol}${maxRow}`;
+  }
+  
+  return xlsxSheet;
+}
+
+/**
+ * Add formulas to pivot sheet for calculated columns
+ * @param {Object} sheet - XLSX sheet object
+ * @param {Array} data - Array of row objects
+ * @param {Array} headers - Array of header names
+ * @returns {Object} - XLSX sheet with formulas added
+ */
+function addFormulasToPivotSheet(sheet, data, headers) {
+  if (!data || data.length === 0) return sheet;
+  
+  // Find column indices
+  const getColIndex = (headerName) => {
+    const index = headers.indexOf(headerName);
+    return index >= 0 ? index + 1 : null; // +1 because Excel is 1-based
+  };
+  
+  const rateCol = getColIndex('Rate');
+  const cgstCol = getColIndex('Sum of Final CGST Tax');
+  const sgstCol = getColIndex('Sum of Final SGST Tax');
+  const igstCol = getColIndex('Sum of Final IGST Tax');
+  const taxableCol = getColIndex('Sum of Final Taxable Sales Value');
+  
+  // Add formulas for Rate column if all required columns exist
+  if (rateCol && cgstCol && sgstCol && igstCol && taxableCol) {
+    const rateColLetter = getColLetterFromNum(rateCol);
+    const cgstColLetter = getColLetterFromNum(cgstCol);
+    const sgstColLetter = getColLetterFromNum(sgstCol);
+    const igstColLetter = getColLetterFromNum(igstCol);
+    const taxableColLetter = getColLetterFromNum(taxableCol);
+    
+    // Add formula for each data row (starting from row 2, row 1 is header)
+    for (let i = 0; i < data.length; i++) {
+      const rowNum = i + 2; // +2 because row 1 is header
+      const cellAddress = `${rateColLetter}${rowNum}`;
+      
+      // Formula: IF(taxableValue<>0, (CGST+SGST+IGST)/taxableValue, 0)
+      const formula = `IF(${taxableColLetter}${rowNum}<>0,(${cgstColLetter}${rowNum}+${sgstColLetter}${rowNum}+${igstColLetter}${rowNum})/${taxableColLetter}${rowNum},0)`;
+      
+      if (!sheet[cellAddress]) {
+        sheet[cellAddress] = {};
+      }
+      sheet[cellAddress].f = formula;
+      // Keep the calculated value
+      if (data[i]['Rate'] !== undefined) {
+        sheet[cellAddress].v = data[i]['Rate'];
+        sheet[cellAddress].t = 'n';
+      }
+    }
+  }
+  
+  return sheet;
+}
+
+/**
+ * Add formulas to tally ready sheet for calculated columns
+ * @param {Object} sheet - XLSX sheet object created from array of arrays
+ * @param {Array} headers - Array of header names
+ * @param {number} dataRowCount - Number of data rows (excluding header)
+ * @returns {Object} - XLSX sheet with formulas added
+ */
+function addFormulasToTallySheet(sheet, headers, dataRowCount) {
+  if (!headers || dataRowCount === 0) return sheet;
+  
+  // Find column indices
+  const getColIndex = (headerName) => {
+    const index = headers.indexOf(headerName);
+    return index >= 0 ? index + 1 : null; // +1 because Excel is 1-based
+  };
+  
+  const ratePerPieceCol = getColIndex('Rate per piece');
+  const quantityCol = getColIndex('Quantity');
+  const amountCol = getColIndex('Amount');
+  
+  // Add formulas for Rate per piece column if all required columns exist
+  if (ratePerPieceCol && quantityCol && amountCol) {
+    const ratePerPieceColLetter = getColLetterFromNum(ratePerPieceCol);
+    const quantityColLetter = getColLetterFromNum(quantityCol);
+    const amountColLetter = getColLetterFromNum(amountCol);
+    
+    // Add formula for each data row (starting from row 2, row 1 is header)
+    for (let i = 0; i < dataRowCount; i++) {
+      const rowNum = i + 2; // +2 because row 1 is header
+      const cellAddress = `${ratePerPieceColLetter}${rowNum}`;
+      
+      // Formula: IF(Quantity<>0, Amount/Quantity, 0)
+      const formula = `IF(${quantityColLetter}${rowNum}<>0,${amountColLetter}${rowNum}/${quantityColLetter}${rowNum},0)`;
+      
+      if (!sheet[cellAddress]) {
+        sheet[cellAddress] = {};
+      }
+      sheet[cellAddress].f = formula;
+      // Keep the calculated value if it exists
+      if (sheet[cellAddress].v !== undefined) {
+        // Value already set from aoa_to_sheet, just add formula
+      }
+    }
+  }
+  
+  return sheet;
+}
+
+/**
  * Find column index by header name
  */
 function findColumnIndex(ws, headerName) {
@@ -557,6 +747,7 @@ function findColumnIndex(ws, headerName) {
  */
 function filterRowsByTransactionType(ws) {
   console.log('=== STEP 0: Filtering rows by Transaction Type ===');
+  
   
   // Step 1: Find "Transaction Type" and "Quantity" columns dynamically (no hardcoded column letters)
   const headerRow = ws.getRow(1);
@@ -591,6 +782,19 @@ function filterRowsByTransactionType(ws) {
     console.warn('Warning: "Quantity" column not found. Refund quantity adjustment will be skipped.');
   }
   
+  const firstDataRow = ws.getRow(2); // row 2 = first row after header
+
+  console.log('\n=== DEBUG: First Row Data With Headers ===');
+
+  for (let col = 1; col <= maxColCount; col++) {
+    const header = headerRow.getCell(col).value;
+    if (!header) continue;
+
+    const cellValue = firstDataRow.getCell(col).value;
+
+    console.log(`${header}  -->  ${cellValue}`);
+  }
+
   // Get total row count
   const totalRows = ws.rowCount || 1;
   console.log(`Total rows before filtering: ${totalRows}`);
@@ -796,6 +1000,22 @@ function insertColumnsAndRenameHeaders(workbook, sheetName, withInventory = true
   const maxRow = ws.rowCount || 1;
   const maxCol = ws.columnCount || 200;
 
+  // DELETE OLD / UNUSED COLUMNS
+  deleteColumnsByHeader(ws, [
+    'Order Id',
+    'Shipment Id',
+    'Shipment Date',
+    'Order Date',
+    'Shipment Item Id',
+    'Product Tax Code',
+    'Bill From City',
+    'Bill From Postal Code',
+    'Ship From Country',
+    'Ship From Postal Code',
+    'Ship To Country',
+    'Ship To Postal Code'
+  ]);
+
   /**
    * Helper function to manually insert a column by shifting cells
    * This is more reliable than spliceColumns for ensuring proper column separation
@@ -903,6 +1123,60 @@ function insertColumnsAndRenameHeaders(workbook, sheetName, withInventory = true
   return ws;
 }
 
+function deleteColumnByIndex(ws, colIndex) {
+  const maxRow = ws.rowCount || 1;
+  const maxCol = ws.columnCount || 200;
+
+  for (let row = 1; row <= maxRow; row++) {
+    const currentRow = ws.getRow(row);
+
+    for (let col = colIndex; col <= maxCol; col++) {
+      const sourceCell = currentRow.getCell(col + 1);
+      const targetCell = currentRow.getCell(col);
+
+      // Move value
+      targetCell.value = sourceCell.value;
+
+      // Move formula
+      targetCell.formula = sourceCell.formula;
+
+      // Move style (optional)
+      try {
+        if (sourceCell.style && Object.keys(sourceCell.style).length > 0) {
+          targetCell.style = JSON.parse(JSON.stringify(sourceCell.style));
+        }
+      } catch (_) {}
+    }
+  }
+}
+
+
+function deleteColumnsByHeader(ws, headersToDelete) {
+  // Build header → column index map
+  const headerRow = ws.getRow(1);
+  const headerMap = {};
+
+  headerRow.eachCell((cell, colNumber) => {
+    const header = String(cell.value || '').trim();
+    if (header) {
+      headerMap[header] = colNumber;
+    }
+  });
+
+  // Convert headers to column indexes
+  const colIndexes = headersToDelete
+    .map(h => headerMap[h])
+    .filter(Boolean)
+    .sort((a, b) => b - a); // RIGHT → LEFT
+
+  for (const colIndex of colIndexes) {
+    deleteColumnByIndex(ws, colIndex);
+    console.log(`Deleted column at index ${colIndex}`);
+  }
+}
+
+
+
 /**
  * STEP 2: Apply Formulas to Ranges (B2B Version)
  * B2B uses IF formulas for Ship To State Tally Ledger and Final Invoice No.
@@ -957,9 +1231,8 @@ function applyFormulas(ws, sourceSheetName = 'Source', date = '', withInventory 
   const colGiftWrapPromoAmountBasis = getColLetter('Gift Wrap Promo Amount Basis');
   const colShipFromState = getColLetter('Ship From State');
   const colTaxExclusiveGross = getColLetter('Tax Exclusive Gross');
+  const colgstRate = getColLetter('GST RATE');
 
-  console.log("bill from state",colBillFromState);
-  console.log("===================================>00");
   for (let row = 2; row <= lastRow; row++) {
     try {
       // Column FG (O): =VLOOKUP(Sku,'source-sku'!$A$2:$B$229,2,TRUE)
@@ -973,7 +1246,6 @@ function applyFormulas(ws, sourceSheetName = 'Source', date = '', withInventory 
       // B2B Logic - Ship To State Tally Ledger: IF(Bill From State = Ship To State, "Amazon B2B Intra-State", "Amazon B2B Inter-State")
       // Only apply if withInventory is true
       if (colBillFromState && colShipToState && colShipToStateTally) {
-        console.log("Bill From State: ", ws.getCell(`${colBillFromState}${row}`).value, "Ship To State: ", ws.getCell(`${colShipToState}${row}`).value);
         ws.getCell(`${colShipToStateTally}${row}`).value = {
           formula: `IF(${colBillFromState}${row}=${colShipToState}${row},"Amazon B2B Intra-State","Amazon B2B Inter-State")`
         };
@@ -1069,6 +1341,21 @@ function applyFormulas(ws, sourceSheetName = 'Source', date = '', withInventory 
         ws.getCell(`${colFinalShippingIGSTTax}${row}`).value = {
           formula: `IF(${colShipFromState}${row}<>${colShipToState}${row},(${colFinalTaxableShippingValue}${row})*${colFinalTaxRate}${row},0)`
         };
+      }
+
+      // Normalize GST RATE → convert 0.18 → 18, keep 18 as 18
+      if (colgstRate) {
+        const cell = ws.getCell(`${colgstRate}${row}`);
+        const originalValue = cell.value;
+      
+        // Only if GST RATE already has a formula
+        if (originalValue && originalValue.formula) {
+          const baseFormula = originalValue.formula; // AE2+AF2+AG2+AH2
+      
+          cell.value = {
+            formula: `IF((${cell})<=1,(${cell})*100,(${cell}))`
+          };
+        }
       }
 
       // Column Final Amount Receivable (CH): 
@@ -1554,6 +1841,120 @@ function generatePivot(process1Data, sourceSheet , withInventory = true) {
     validationStats: validationStats
   };
 }
+
+const safeNumber = (value) => {
+  if (value === null || value === undefined || value === '') return 0;
+  if (typeof value === 'string') {
+    const cleaned = value.replace(/,/g, '').trim();
+    const num = Number(cleaned);
+    return isNaN(num) ? 0 : num;
+  }
+  const num = Number(value);
+  return isNaN(num) ? 0 : num;
+};
+
+const normalizeString = (value) => {
+  if (value === null || value === undefined) return '';
+  return String(value).trim();
+};
+
+
+function generateGstinWiseSummary(process1Data) {
+  const pivot = {};
+
+  const normalizeGstRate = (rate) => {
+    if (!rate || rate <= 0) return 0;
+  
+    if (rate <= 0.06) return 0.05;
+    if (rate <= 0.13) return 0.12;
+    if (rate <= 0.20) return 0.18;
+  
+    return +rate.toFixed(2);
+  };
+  
+  const createGroupKey = (row) => {
+    return JSON.stringify({
+      gstin: normalizeString(row['Seller Gstin']),
+      rate: row.__normalizedRate,   // pre-computed, stable value
+       invoiceNo : normalizeString(row['Invoice Number']),
+       invoiceDate : normalizeString(row['Invoice Date']),
+       creditNoteDate : normalizeString(row['Credit Note Date']),
+       creditNoteNo : normalizeString(row['Credit Note No']),
+       customerbilltogstin : normalizeString(row['Customer Bill To Gstid'])
+    });
+  };
+  
+
+  process1Data.forEach((row, index) => {
+    const gstin = normalizeString(row['Seller Gstin']);
+    if (!gstin) return;
+
+    const invoiceNo = normalizeString(row['Invoice Number']);
+    const invoiceDate = normalizeString(row['Invoice Date']);
+    const creditNoteDate = normalizeString(row['Credit Note Date']);
+    const creditNoteNo = normalizeString(row['Credit Note No']);
+    const customerbilltogstin = normalizeString(row['Customer Bill To Gstid']);
+    const taxable = safeNumber(row['Final Taxable Sales Value']);
+    if (taxable === 0) return;
+
+    const cgst = safeNumber(row['Final CGST Tax']);
+    const sgst = safeNumber(row['Final SGST Tax']);
+    const igst = safeNumber(row['Final IGST Tax']);
+
+    const totalTax = cgst + sgst + igst;
+    const rawRate = totalTax / taxable;
+
+    // 🔒 normalize ONCE
+    const slabRate = normalizeGstRate(rawRate);
+    row.__normalizedRate = slabRate;
+
+    const groupKey = createGroupKey(row);
+
+    // INIT (same as your pivot pattern)
+    if (!pivot[groupKey]) {
+      pivot[groupKey] = {
+        'Seller Gstin': gstin,
+        'Final Invoice No.': invoiceNo,
+        'Invoice Date': invoiceDate,
+        'Credit Note Date': creditNoteDate,
+        'Credit Note No': creditNoteNo,
+        'Customer Bill To Gstin': customerbilltogstin,
+        'GST Rate': slabRate,
+        'Taxable Value': 0,
+        'CGST Amount': 0,
+        'SGST Amount': 0,
+        'IGST Amount': 0
+      };
+    }
+
+    // AGGREGATION (same as Excel SUM)
+    pivot[groupKey]['Taxable Value'] += taxable;
+    pivot[groupKey]['CGST Amount'] += cgst;
+    pivot[groupKey]['SGST Amount'] += sgst;
+    pivot[groupKey]['IGST Amount'] += igst;
+  });
+
+  // Convert to rows
+  const rows = Object.values(pivot).filter(r =>
+    safeNumber(r['Taxable Value']) !== 0 ||
+    safeNumber(r['CGST Amount']) !== 0 ||
+    safeNumber(r['SGST Amount']) !== 0 ||
+    safeNumber(r['IGST Amount']) !== 0
+  );
+
+  // Excel-like sorting
+  rows.sort((a, b) => {
+    if (a['Seller Gstin'] !== b['Seller Gstin']) {
+      return a['Seller Gstin'].localeCompare(b['Seller Gstin']);
+    }
+    return a['GST Rate'] - b['GST Rate'];
+  });
+
+  return rows;
+}
+
+
+
 
 function generateTallyReady(pivotRows, fileDate, withInventory ) {
   const GST_SLABS = [0.05, 0.12, 0.18];
@@ -2172,6 +2573,7 @@ function generateGstnHsn(pivotRows, fileDate, withInventory) {
 async function processMacrosB2B(rawFileBuffer, skuFileBuffer, brandName, date, skuData = null, stateConfigData = null, withInventory = true) {
   try {
     // Validate file buffers
+
     if (!rawFileBuffer || rawFileBuffer.length === 0) {
       throw new Error('Raw file buffer is empty or invalid');
     }
@@ -2323,6 +2725,11 @@ async function processMacrosB2B(rawFileBuffer, skuFileBuffer, brandName, date, s
     console.log(`withInventory: ${withInventory}`);
     insertColumnsAndRenameHeaders(workbook, 'amazon-b2b-process1', withInventory);
 
+
+    // ============================================================
+    // STEP 1.1: DELETE COLUMNS
+    // ============================================================
+    
     // ============================================================
     // STEP 2: APPLY FORMULAS
     // ============================================================
@@ -2337,14 +2744,92 @@ async function processMacrosB2B(rawFileBuffer, skuFileBuffer, brandName, date, s
     // We must evaluate all formulas before converting to JSON for database storage.
     
     // Build column name map from header row
+    // IMPORTANT: Read ALL columns including empty ones to maintain proper column alignment
+    // Use direct cell addressing (A1, B1, C1, etc.) to ensure exact column positions
     const headerRow = ws.getRow(1);
     const columnMap = {}; // colNumber -> headerName
-    headerRow.eachCell({ includeEmpty: false }, (cell, colNumber) => {
-      const headerName = String(cell.value || '').trim();
-      if (headerName) {
-        columnMap[colNumber] = headerName;
+    const columnAddressMap = {}; // colNumber -> columnLetter (e.g., 1 -> 'A', 27 -> 'AA')
+    
+    // First, try to determine the actual maximum column from the worksheet
+    // Check both the header row and sample data rows to find the real max column
+    let maxColCount = Math.max(headerRow.cellCount || 0, 0);
+    const sampleRow = ws.getRow(2);
+    if (sampleRow) {
+      maxColCount = Math.max(maxColCount, sampleRow.cellCount || 0);
+    }
+    // Also check worksheet column count if available
+    if (ws.columnCount) {
+      maxColCount = Math.max(maxColCount, ws.columnCount);
+    }
+    // Ensure we read at least 200 columns, but expand if needed
+    maxColCount = Math.max(maxColCount, 200);
+    
+    console.log(`Reading headers from ${maxColCount} columns`);
+    
+    // Read all columns by index to maintain alignment even if some headers are empty
+    // Use direct cell addressing to avoid ExcelJS sparse array issues
+    for (let colNumber = 1; colNumber <= maxColCount; colNumber++) {
+      const colLetter = getColumnLetter(colNumber);
+      columnAddressMap[colNumber] = colLetter;
+      
+      // Read cell directly by address (e.g., 'A1', 'B1') instead of column index
+      // This ensures we get the exact cell even if row structure is sparse
+      try {
+        const cell = ws.getCell(`${colLetter}1`);
+        if (cell) {
+          // Check if cell has a value (not just if it exists, as empty cells exist too)
+          const cellValue = cell.value;
+          if (cellValue !== null && cellValue !== undefined && cellValue !== '') {
+            const headerName = String(cellValue).trim();
+            if (headerName) {
+              columnMap[colNumber] = headerName;
+            }
+          }
+        }
+      } catch (e) {
+        // Skip if cell doesn't exist
+        continue;
       }
-    });
+    }
+    
+    // Debug: Log column positions for Credit Note columns and verify no duplicates
+    console.log('Column mapping sample (first 50 columns):');
+    const headerToColMap = {}; // headerName -> [colNumbers] to detect duplicates
+    for (let i = 1; i <= Math.min(50, maxColCount); i++) {
+      if (columnMap[i]) {
+        const headerName = columnMap[i];
+        console.log(`  Column ${i} (${columnAddressMap[i]}): "${headerName}"`);
+        
+        // Track which columns have which headers
+        if (!headerToColMap[headerName]) {
+          headerToColMap[headerName] = [];
+        }
+        headerToColMap[headerName].push(i);
+      }
+    }
+    
+    // Check for duplicate column mappings (same header in multiple columns)
+    const duplicateHeaders = Object.entries(headerToColMap).filter(([name, cols]) => cols.length > 1);
+    if (duplicateHeaders.length > 0) {
+      console.warn('⚠ Found duplicate headers:', duplicateHeaders.map(([name, cols]) => `"${name}" in columns ${cols.join(', ')}`));
+    }
+    
+    // Specifically check Credit Note columns
+    const creditNoteDateCols = headerToColMap['Credit Note Date'] || [];
+    const creditNoteNoCols = headerToColMap['Credit Note No'] || [];
+    const irnNumberCols = headerToColMap['Irn Number'] || [];
+    console.log(`Credit Note Date columns: ${creditNoteDateCols.join(', ') || 'NOT FOUND'}`);
+    console.log(`Credit Note No columns: ${creditNoteNoCols.join(', ') || 'NOT FOUND'}`);
+    console.log(`Irn Number columns: ${irnNumberCols.join(', ') || 'NOT FOUND'}`);
+    
+    // Verify they are different columns
+    if (creditNoteDateCols.length > 0 && creditNoteNoCols.length > 0) {
+      const allCols = [...creditNoteDateCols, ...creditNoteNoCols];
+      const uniqueCols = [...new Set(allCols)];
+      if (allCols.length !== uniqueCols.length) {
+        console.error('❌ ERROR: Credit Note Date and Credit Note No are mapped to the same column(s)!');
+      }
+    }
 
     // Create lookup maps from skuData and stateConfigData for manual VLOOKUP calculation
     // These replace the Excel VLOOKUP formulas since the source sheets don't exist in the workbook yet
@@ -2376,22 +2861,33 @@ async function processMacrosB2B(rawFileBuffer, skuFileBuffer, brandName, date, s
     const lastRow = Math.min(ws.rowCount || 50000, 50000);
     const missingSKUsSet = new Set();
     
-    // Find SKU, Bill From State, and Ship To State column numbers for B2B logic
+    // Find SKU, Bill From State, Ship To State, Credit Note Date, and Credit Note No column numbers
     let skuColNumber = null;
     let billFromStateColNumber = null;
     let shipToStateColNumber = null;
+    let creditNoteDateColNumber = null;
+    let creditNoteNoColNumber = null;
+    
     for (const [colNum, headerName] of Object.entries(columnMap)) {
+      const colNumInt = parseInt(colNum);
       if (headerName === 'Sku' || headerName === 'SKU') {
-        skuColNumber = parseInt(colNum);
+        skuColNumber = colNumInt;
       }
       if (headerName === 'Bill From State') {
-        billFromStateColNumber = parseInt(colNum);
+        billFromStateColNumber = colNumInt;
       }
       if (headerName === 'Ship To State') {
-        shipToStateColNumber = parseInt(colNum);
+        shipToStateColNumber = colNumInt;
+      }
+      if (headerName === 'Credit Note Date') {
+        creditNoteDateColNumber = colNumInt;
+      }
+      if (headerName === 'Credit Note No') {
+        creditNoteNoColNumber = colNumInt;
       }
     }
-    console.log(`✓ B2B columns - Bill From State: col ${billFromStateColNumber}, Ship To State: col ${shipToStateColNumber}`);
+    console.log(`✓ B2B columns - Bill From State: col ${billFromStateColNumber} (${columnAddressMap[billFromStateColNumber]}), Ship To State: col ${shipToStateColNumber} (${columnAddressMap[shipToStateColNumber]})`);
+    console.log(`✓ Credit Note columns - Credit Note Date: col ${creditNoteDateColNumber} (${columnAddressMap[creditNoteDateColNumber]}), Credit Note No: col ${creditNoteNoColNumber} (${columnAddressMap[creditNoteNoColNumber]})`);
     
     for (let rowNum = 2; rowNum <= lastRow; rowNum++) {
       const row = ws.getRow(rowNum);
@@ -2401,62 +2897,127 @@ async function processMacrosB2B(rawFileBuffer, skuFileBuffer, brandName, date, s
       let skuValue = null;
 
       // Get SKU, Bill From State, and Ship To State values for B2B logic
+      // Use direct cell addressing to ensure correct column alignment
       let billFromStateValue = null;
       let shipToStateValue = null;
       if (skuColNumber) {
-        const skuCell = row.getCell(skuColNumber);
-        if (skuCell && skuCell.value) {
-          skuValue = String(skuCell.value).trim();
+        const skuColLetter = columnAddressMap[skuColNumber];
+        if (skuColLetter) {
+          const skuCell = ws.getCell(`${skuColLetter}${rowNum}`);
+          if (skuCell && skuCell.value !== null && skuCell.value !== undefined) {
+            skuValue = String(skuCell.value).trim();
+          }
         }
       }
       if (billFromStateColNumber) {
-        const billFromCell = row.getCell(billFromStateColNumber);
-        if (billFromCell && billFromCell.value) {
-          billFromStateValue = String(billFromCell.value).trim();
+        const billFromColLetter = columnAddressMap[billFromStateColNumber];
+        if (billFromColLetter) {
+          const billFromCell = ws.getCell(`${billFromColLetter}${rowNum}`);
+          if (billFromCell && billFromCell.value !== null && billFromCell.value !== undefined) {
+            billFromStateValue = String(billFromCell.value).trim();
+          }
         }
       }
       if (shipToStateColNumber) {
-        const stateCell = row.getCell(shipToStateColNumber);
-        if (stateCell && stateCell.value) {
-          shipToStateValue = String(stateCell.value).trim();
+        const shipToColLetter = columnAddressMap[shipToStateColNumber];
+        if (shipToColLetter) {
+          const stateCell = ws.getCell(`${shipToColLetter}${rowNum}`);
+          if (stateCell && stateCell.value !== null && stateCell.value !== undefined) {
+            shipToStateValue = String(stateCell.value).trim();
+          }
         }
       }
 
-      row.eachCell({ includeEmpty: false }, (cell, colNumber) => {
+      // Read all columns by direct cell address to maintain proper alignment even with empty cells
+      // CRITICAL: Using direct cell addressing (A2, B2, C2, etc.) instead of row.getCell() ensures that
+      // blank cells (like empty "Credit Note Date" or "Credit Note No") don't cause column misalignment.
+      // Each column is read from its exact Excel position regardless of whether previous columns are empty.
+      for (let colNumber = 1; colNumber <= maxColCount; colNumber++) {
         const headerName = columnMap[colNumber];
-        if (headerName) {
-          let cellValue;
+        if (!headerName) continue; // Skip columns without headers
+      
+        // Get column letter from our address map
+        const colLetter = columnAddressMap[colNumber];
+        if (!colLetter) continue;
+      
+        // Read cell using BOTH methods for validation:
+        // 1. Direct address (ws.getCell('A2')) - most reliable
+        // 2. Row column number (row.getCell(1)) - fallback
+        // Use the direct address method as primary, but validate with row method
+        const cellAddress = `${colLetter}${rowNum}`;
+        let cellValue = ''; // Default to empty string
+        
+        try {
+          // PRIMARY METHOD: Use direct cell address - this should give us the exact cell
+          const cellByAddress = ws.getCell(cellAddress);
           
-          // If cell has a formula, evaluate it
-          if (cell.formula) {
-            const colLetter = evaluator.getColumnLetterFromIndex(colNumber - 1);
-            cellValue = evaluator.getCellValue(colLetter, rowNum);
-          } else {
-            // Use direct cell value
-            cellValue = cell.value;
-          }
+          // SECONDARY METHOD: Also try row.getCell() for comparison
+          const cellByIndex = row.getCell(colNumber);
           
-          // Check if this is FG column and has empty value (missing SKU)
-          // Only check if withInventory is true
-          if (withInventory && headerName === 'FG' && (cellValue === '' || cellValue === null || cellValue === undefined)) {
-            // Track the missing SKU
-            if (skuValue) {
-              missingSKUsSet.add(skuValue);
+          // Use the cell from direct address (more reliable)
+          const cell = cellByAddress;
+          
+          if (cell) {
+            // Check if cell has a formula first
+            if (cell.formula) {
+              // If cell has a formula, evaluate it
+              cellValue = evaluator.getCellValue(colLetter, rowNum);
+            } else {
+              // Get cell value directly
+              // CRITICAL: For empty cells, cell.value will be null/undefined
+              // We must check for this explicitly to avoid reading wrong values
+              const rawValue = cell.value;
+              
+              // Only use the value if it's not null/undefined
+              // Empty cells should remain as empty string
+              if (rawValue !== null && rawValue !== undefined) {
+                cellValue = rawValue;
+              } else {
+                // Explicitly empty cell - keep as empty string
+                cellValue = '';
+              }
             }
-            rowHasError = true;
-            // Don't add this cell value - will skip row
-            return;
+            
+            // DEBUG: For Credit Note columns, log what we're reading
+            if ((headerName === 'Credit Note Date' || headerName === 'Credit Note No') && rowNum <= 3) {
+              const addressValue = cellByAddress ? (cellByAddress.value || '(empty)') : '(no cell)';
+              const indexValue = cellByIndex ? (cellByIndex.value || '(empty)') : '(no cell)';
+              console.log(`Row ${rowNum}, ${headerName} (col ${colNumber}, ${colLetter}): address=${addressValue}, index=${indexValue}`);
+            }
           }
-          
-          // Convert null/undefined to empty string (will be handled as 0 in pivot)
-          if (cellValue === null || cellValue === undefined) {
-            cellValue = '';
+          // If cell is null/undefined, cellValue remains as empty string (already set)
+        } catch (e) {
+          // Error reading cell, keep as empty string
+          // Log errors for Credit Note columns to help debug
+          if (headerName === 'Credit Note Date' || headerName === 'Credit Note No') {
+            console.warn(`Error reading cell ${cellAddress} (col ${colNumber}) for column "${headerName}":`, e.message);
           }
-          
-          rowData[headerName] = cellValue;
-          hasData = true;
+          cellValue = '';
         }
-      });
+      
+        // FG validation (unchanged logic)
+        if (
+          withInventory &&
+          headerName === 'FG' &&
+          (cellValue === '' || cellValue === null || cellValue === undefined)
+        ) {
+          if (skuValue) {
+            missingSKUsSet.add(skuValue);
+          }
+          rowHasError = true;
+          break; // ❗ stop processing this row
+        }
+      
+        // Normalize blanks - preserve empty strings for blank cells
+        if (cellValue === null || cellValue === undefined) {
+          cellValue = '';
+        }
+      
+        // Always set the value, even if empty, to maintain column alignment
+        rowData[headerName] = cellValue;
+        hasData = true;
+      }
+      
 
       // Manually calculate values for B2B (only if withInventory is true)
       if (withInventory) {
@@ -2496,7 +3057,7 @@ async function processMacrosB2B(rawFileBuffer, skuFileBuffer, brandName, date, s
     }
 
     console.log(`Converted ${process1Json.length} rows to JSON`);
-
+    console.log('process1Json===>', process1Json[1]);
     // ============================================================
     // STEP 4: GENERATE PIVOT TABLE
     // ============================================================
@@ -2510,6 +3071,22 @@ async function processMacrosB2B(rawFileBuffer, skuFileBuffer, brandName, date, s
     const pivotData = pivotResult.pivotRows;
     const pivotValidationStats = pivotResult.validationStats;
     console.log(`Generated ${pivotData.length} pivot rows`);
+
+    // ============================================================
+    // STEP 4.1: GENERATE GST RATE TABLE
+    // ============================================================
+    console.log('Step 4.1: Generate GST Rate  Table');
+    // process1Json contains cell values from ExcelJS worksheet
+    // Formulas may not be calculated yet, but safeNumber() in pivot will handle formula strings as 0
+    // For proper operation, formulas should be evaluated first (by Excel or formula engine)
+    // The pivot function safely handles any remaining strings, nulls, or invalid values
+    // Pass source sheet to pivot function for Final Invoice No. lookup
+
+// this is gst sumary code issue in credit notename nad number null catch
+    // const GstPivotResult = generateGstinWiseSummary(process1Json, mainSourceSheet, withInventory);
+    // console.log(`Generated ${GstPivotResult.length} pivot rows`);
+
+
 
     // ============================================================
     // STEP 5: CREATE PIVOT 1 & REPORT1 SHEETS
@@ -2577,11 +3154,24 @@ async function processMacrosB2B(rawFileBuffer, skuFileBuffer, brandName, date, s
     }
     
     const pivotSheet = XLSX.utils.json_to_sheet(pivotData);
-    
+    // Add formulas for calculated columns
+    const pivotHeaders = Object.keys(pivotData[0] || {});
+    addFormulasToPivotSheet(pivotSheet, pivotData, pivotHeaders);
     XLSX.utils.book_append_sheet(outputWorkbook, pivotSheet, 'amazon-b2b-pivot');
     
-    // Report1 is same as Pivot but values only
+
+    // const GstPivotSheet = XLSX.utils.json_to_sheet(GstPivotResult);
+    // // Add formulas for GSTR B2B sheet if it has Rate column
+    // if (GstPivotResult.length > 0) {
+    //   const gstHeaders = Object.keys(GstPivotResult[0] || {});
+    //   addFormulasToPivotSheet(GstPivotSheet, GstPivotResult, gstHeaders);
+    // }
+    // XLSX.utils.book_append_sheet(outputWorkbook, GstPivotSheet, 'GSTR B2B');
+
+
+    // Report1 is same as Pivot but values only (keep formulas for transparency)
     const report1Sheet = XLSX.utils.json_to_sheet(pivotData);
+    addFormulasToPivotSheet(report1Sheet, pivotData, pivotHeaders);
     XLSX.utils.book_append_sheet(outputWorkbook, report1Sheet, 'Report1');
 
         // ============================================================
@@ -2592,8 +3182,10 @@ async function processMacrosB2B(rawFileBuffer, skuFileBuffer, brandName, date, s
     // Build array of arrays: [headers, ...dataRows]
     const tallyReadySheetData = [tallyReadyResult.headers, ...tallyReadyResult.data];
     const tallyReadySheet = XLSX.utils.aoa_to_sheet(tallyReadySheetData);
+    // Add formulas for calculated columns
+    addFormulasToTallySheet(tallyReadySheet, tallyReadyResult.headers, tallyReadyResult.data.length);
     XLSX.utils.book_append_sheet(outputWorkbook, tallyReadySheet, 'tally ready');
-    console.log(`✓ Added tally ready sheet with ${tallyReadyResult.data.length} rows`);
+    console.log(`✓ Added tally ready sheet with ${tallyReadyResult.data.length} rows and formulas`);
 
         // ============================================================
     // STEP 5.6: CREATE HSN SAC READY SHEET
@@ -2617,8 +3209,10 @@ async function processMacrosB2B(rawFileBuffer, skuFileBuffer, brandName, date, s
       // Build array of arrays: [headers, ...dataRows]
       const shippingtallyReadySheetData = [shippingtallyReadyResult.headers, ...shippingtallyReadyResult.data];
       const shippingtallyReadySheet = XLSX.utils.aoa_to_sheet(shippingtallyReadySheetData);
+      // Add formulas for calculated columns (if any)
+      addFormulasToTallySheet(shippingtallyReadySheet, shippingtallyReadyResult.headers, shippingtallyReadyResult.data.length);
       XLSX.utils.book_append_sheet(outputWorkbook, shippingtallyReadySheet, 'shipping tally ready');
-      console.log(`✓ Added shipping tally ready sheet with ${shippingtallyReadyResult.data.length} rows`);
+      console.log(`✓ Added shipping tally ready sheet with ${shippingtallyReadyResult.data.length} rows and formulas`);
   
 
 
@@ -2626,9 +3220,10 @@ async function processMacrosB2B(rawFileBuffer, skuFileBuffer, brandName, date, s
     // STEP 6: ADD AMAZON-B2B-PROCESS1 SHEET TO OUTPUT WORKBOOK
     // ============================================================
     console.log('Step 6: Add amazon-b2b-process1 sheet to output workbook');
-    const process1Sheet = XLSX.utils.json_to_sheet(process1Json);
+    // Convert ExcelJS worksheet to XLSX format with formulas preserved
+    const process1Sheet = excelJSToXLSXWithFormulas(ws);
     XLSX.utils.book_append_sheet(outputWorkbook, process1Sheet, 'amazon-b2b-process1');
-    console.log(`✓ Added amazon-b2b-process1 sheet with ${process1Json.length} rows`);
+    console.log(`✓ Added amazon-b2b-process1 sheet with formulas preserved`);
 
     // ============================================================
     // STEP 7: ADD SOURCE-SKU SHEET TO OUTPUT WORKBOOK

@@ -91,6 +91,117 @@ function normalizeStateName(state) {
 }
 
 /**
+ * Get column letter from column number (1 = A, 2 = B, etc.)
+ */
+function getColLetterFromNum(colNum) {
+  let result = '';
+  let num = colNum;
+  while (num > 0) {
+    num--;
+    result = String.fromCharCode(65 + (num % 26)) + result;
+    num = Math.floor(num / 26);
+  }
+  return result;
+}
+
+/**
+ * Add formulas to pivot sheet for calculated columns
+ * @param {Object} sheet - XLSX sheet object
+ * @param {Array} data - Array of row objects
+ * @param {Array} headers - Array of header names
+ * @returns {Object} - XLSX sheet with formulas added
+ */
+function addFormulasToPivotSheet(sheet, data, headers) {
+  if (!data || data.length === 0) return sheet;
+  
+  // Find column indices
+  const getColIndex = (headerName) => {
+    const index = headers.indexOf(headerName);
+    return index >= 0 ? index + 1 : null; // +1 because Excel is 1-based
+  };
+  
+  const rateCol = getColIndex('Rate');
+  const cgstCol = getColIndex('CGST Amount');
+  const sgstCol = getColIndex('SGST Amount');
+  const igstCol = getColIndex('IGST Amount');
+  const taxableCol = getColIndex('Base Value');
+  
+  // Add formulas for Rate column if all required columns exist
+  if (rateCol && cgstCol && sgstCol && igstCol && taxableCol) {
+    const rateColLetter = getColLetterFromNum(rateCol);
+    const cgstColLetter = getColLetterFromNum(cgstCol);
+    const sgstColLetter = getColLetterFromNum(sgstCol);
+    const igstColLetter = getColLetterFromNum(igstCol);
+    const taxableColLetter = getColLetterFromNum(taxableCol);
+    
+    // Add formula for each data row (starting from row 2, row 1 is header)
+    for (let i = 0; i < data.length; i++) {
+      const rowNum = i + 2; // +2 because row 1 is header
+      const cellAddress = `${rateColLetter}${rowNum}`;
+      
+      // Formula: IF(taxableValue<>0, (CGST+SGST+IGST)/taxableValue, 0)
+      const formula = `IF(${taxableColLetter}${rowNum}<>0,(${cgstColLetter}${rowNum}+${sgstColLetter}${rowNum}+${igstColLetter}${rowNum})/${taxableColLetter}${rowNum},0)`;
+      
+      if (!sheet[cellAddress]) {
+        sheet[cellAddress] = {};
+      }
+      sheet[cellAddress].f = formula;
+      // Keep the calculated value
+      if (data[i].rate !== undefined) {
+        sheet[cellAddress].v = data[i].rate;
+        sheet[cellAddress].t = 'n';
+      }
+    }
+  }
+  
+  return sheet;
+}
+
+/**
+ * Add formulas to tally ready sheet for calculated columns
+ * @param {Object} sheet - XLSX sheet object created from array of arrays
+ * @param {Array} headers - Array of header names
+ * @param {number} dataRowCount - Number of data rows (excluding header)
+ * @returns {Object} - XLSX sheet with formulas added
+ */
+function addFormulasToTallySheet(sheet, headers, dataRowCount) {
+  if (!headers || dataRowCount === 0) return sheet;
+  
+  // Find column indices
+  const getColIndex = (headerName) => {
+    const index = headers.indexOf(headerName);
+    return index >= 0 ? index + 1 : null; // +1 because Excel is 1-based
+  };
+  
+  const ratePerPieceCol = getColIndex('Rate per piece');
+  const quantityCol = getColIndex('Quantity');
+  const amountCol = getColIndex('Amount');
+  
+  // Add formulas for Rate per piece column if all required columns exist
+  if (ratePerPieceCol && quantityCol && amountCol) {
+    const ratePerPieceColLetter = getColLetterFromNum(ratePerPieceCol);
+    const quantityColLetter = getColLetterFromNum(quantityCol);
+    const amountColLetter = getColLetterFromNum(amountCol);
+    
+    // Add formula for each data row (starting from row 2, row 1 is header)
+    for (let i = 0; i < dataRowCount; i++) {
+      const rowNum = i + 2; // +2 because row 1 is header
+      const cellAddress = `${ratePerPieceColLetter}${rowNum}`;
+      
+      // Formula: IF(Quantity<>0, Amount/Quantity, 0)
+      const formula = `IF(${quantityColLetter}${rowNum}<>0,${amountColLetter}${rowNum}/${quantityColLetter}${rowNum},0)`;
+      
+      if (!sheet[cellAddress]) {
+        sheet[cellAddress] = {};
+      }
+      sheet[cellAddress].f = formula;
+    }
+  }
+  
+  return sheet;
+}
+
+/**
  * Parse CSV file buffer
  */
 function parseCSV(csvBuffer) {
@@ -1030,11 +1141,11 @@ const netPivotData = [
     }
     return sheetRow;
   });
-  XLSX.utils.book_append_sheet(
-    outputWorkbook,
-    XLSX.utils.json_to_sheet(pivotSheetData),
-    'Pivot Table'
-  );
+  const pivotSheet = XLSX.utils.json_to_sheet(pivotSheetData);
+  // Add formulas for calculated columns
+  const pivotHeaders = Object.keys(pivotSheetData[0] || {});
+  addFormulasToPivotSheet(pivotSheet, pivotSheetData, pivotHeaders);
+  XLSX.utils.book_append_sheet(outputWorkbook, pivotSheet, 'Pivot Table');
 
   // ============================================================
     // STEP 2.5: CREATE TALLY READY SHEET
@@ -1044,8 +1155,10 @@ const netPivotData = [
     // Build array of arrays: [headers, ...dataRows]
     const tallyReadySheetData = [tallyReadyResult.headers, ...tallyReadyResult.data];
     const tallyReadySheet = XLSX.utils.aoa_to_sheet(tallyReadySheetData);
+    // Add formulas for calculated columns
+    addFormulasToTallySheet(tallyReadySheet, tallyReadyResult.headers, tallyReadyResult.data.length);
     XLSX.utils.book_append_sheet(outputWorkbook, tallyReadySheet, 'tally ready');
-    console.log(`✓ Added tally ready sheet with ${tallyReadyResult.data.length} rows`);
+    console.log(`✓ Added tally ready sheet with ${tallyReadyResult.data.length} rows and formulas`);
     
         
     // ============================================================
@@ -1054,8 +1167,10 @@ const netPivotData = [
     // Build array of arrays: [headers, ...dataRows]
     const shippingtallyReadySheetData = [shippingtallyReadyResult.headers, ...shippingtallyReadyResult.data];
     const shippingtallyReadySheet = XLSX.utils.aoa_to_sheet(shippingtallyReadySheetData);
+    // Add formulas for calculated columns (if any)
+    addFormulasToTallySheet(shippingtallyReadySheet, shippingtallyReadyResult.headers, shippingtallyReadyResult.data.length);
     XLSX.utils.book_append_sheet(outputWorkbook, shippingtallyReadySheet, 'shipping tally ready');
-    console.log(`✓ Added shipping tally ready sheet with ${shippingtallyReadyResult.data.length} rows`);
+    console.log(`✓ Added shipping tally ready sheet with ${shippingtallyReadyResult.data.length} rows and formulas`);
 
 
 

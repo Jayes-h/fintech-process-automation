@@ -586,6 +586,192 @@ class FormulaEvaluator {
 }
 
 /**
+ * Get column letter from column number (1 = A, 2 = B, etc.)
+ */
+function getColLetterFromNum(colNum) {
+  let result = '';
+  let num = colNum;
+  while (num > 0) {
+    num--;
+    result = String.fromCharCode(65 + (num % 26)) + result;
+    num = Math.floor(num / 26);
+  }
+  return result;
+}
+
+/**
+ * Convert ExcelJS worksheet to XLSX format with formulas preserved
+ * @param {Worksheet} ws - ExcelJS worksheet
+ * @returns {Object} - XLSX worksheet object with formulas
+ */
+function excelJSToXLSXWithFormulas(ws) {
+  const xlsxSheet = {};
+  const maxRow = ws.actualRowCount || ws.rowCount || 1;
+  const maxCol = ws.columnCount || 200;
+  
+  // Process all cells
+  for (let rowNum = 1; rowNum <= maxRow; rowNum++) {
+    const row = ws.getRow(rowNum);
+    for (let colNum = 1; colNum <= maxCol; colNum++) {
+      const cell = row.getCell(colNum);
+      const colLetter = getColLetterFromNum(colNum);
+      const cellAddress = `${colLetter}${rowNum}`;
+      
+      if (cell && (cell.value !== null && cell.value !== undefined || cell.formula)) {
+        const xlsxCell = {};
+        
+        // If cell has a formula, preserve it
+        if (cell.formula) {
+          xlsxCell.f = cell.formula; // Formula string
+          // Also store the calculated value
+          try {
+            const cellValue = cell.value;
+            if (cellValue !== null && cellValue !== undefined) {
+              if (typeof cellValue === 'number') {
+                xlsxCell.v = cellValue;
+                xlsxCell.t = 'n';
+              } else if (cellValue instanceof Date) {
+                xlsxCell.v = cellValue;
+                xlsxCell.t = 'd';
+              } else {
+                xlsxCell.v = String(cellValue);
+                xlsxCell.t = 's';
+              }
+            }
+          } catch (e) {
+            // If we can't get value, formula will be enough
+          }
+        } else {
+          // Regular value cell
+          const cellValue = cell.value;
+          if (cellValue !== null && cellValue !== undefined) {
+            if (typeof cellValue === 'number') {
+              xlsxCell.v = cellValue;
+              xlsxCell.t = 'n';
+            } else if (cellValue instanceof Date) {
+              xlsxCell.v = cellValue;
+              xlsxCell.t = 'd';
+            } else {
+              xlsxCell.v = String(cellValue);
+              xlsxCell.t = 's';
+            }
+          }
+        }
+        
+        if (Object.keys(xlsxCell).length > 0) {
+          xlsxSheet[cellAddress] = xlsxCell;
+        }
+      }
+    }
+  }
+  
+  // Set the range
+  if (maxRow > 0 && maxCol > 0) {
+    const endCol = getColLetterFromNum(maxCol);
+    xlsxSheet['!ref'] = `A1:${endCol}${maxRow}`;
+  }
+  
+  return xlsxSheet;
+}
+
+/**
+ * Add formulas to pivot sheet for calculated columns
+ * @param {Object} sheet - XLSX sheet object
+ * @param {Array} data - Array of row objects
+ * @param {Array} headers - Array of header names
+ * @returns {Object} - XLSX sheet with formulas added
+ */
+function addFormulasToPivotSheet(sheet, data, headers) {
+  if (!data || data.length === 0) return sheet;
+  
+  // Find column indices
+  const getColIndex = (headerName) => {
+    const index = headers.indexOf(headerName);
+    return index >= 0 ? index + 1 : null; // +1 because Excel is 1-based
+  };
+  
+  const rateCol = getColIndex('Rate');
+  const cgstCol = getColIndex('Sum of Final CGST Tax');
+  const sgstCol = getColIndex('Sum of Final SGST Tax');
+  const igstCol = getColIndex('Sum of Final IGST Tax');
+  const taxableCol = getColIndex('Sum of Final Taxable Sales Value');
+  
+  // Add formulas for Rate column if all required columns exist
+  if (rateCol && cgstCol && sgstCol && igstCol && taxableCol) {
+    const rateColLetter = getColLetterFromNum(rateCol);
+    const cgstColLetter = getColLetterFromNum(cgstCol);
+    const sgstColLetter = getColLetterFromNum(sgstCol);
+    const igstColLetter = getColLetterFromNum(igstCol);
+    const taxableColLetter = getColLetterFromNum(taxableCol);
+    
+    // Add formula for each data row (starting from row 2, row 1 is header)
+    for (let i = 0; i < data.length; i++) {
+      const rowNum = i + 2; // +2 because row 1 is header
+      const cellAddress = `${rateColLetter}${rowNum}`;
+      
+      // Formula: IF(taxableValue<>0, (CGST+SGST+IGST)/taxableValue, 0)
+      const formula = `IF(${taxableColLetter}${rowNum}<>0,(${cgstColLetter}${rowNum}+${sgstColLetter}${rowNum}+${igstColLetter}${rowNum})/${taxableColLetter}${rowNum},0)`;
+      
+      if (!sheet[cellAddress]) {
+        sheet[cellAddress] = {};
+      }
+      sheet[cellAddress].f = formula;
+      // Keep the calculated value
+      if (data[i]['Rate'] !== undefined) {
+        sheet[cellAddress].v = data[i]['Rate'];
+        sheet[cellAddress].t = 'n';
+      }
+    }
+  }
+  
+  return sheet;
+}
+
+/**
+ * Add formulas to tally ready sheet for calculated columns
+ * @param {Object} sheet - XLSX sheet object created from array of arrays
+ * @param {Array} headers - Array of header names
+ * @param {number} dataRowCount - Number of data rows (excluding header)
+ * @returns {Object} - XLSX sheet with formulas added
+ */
+function addFormulasToTallySheet(sheet, headers, dataRowCount) {
+  if (!headers || dataRowCount === 0) return sheet;
+  
+  // Find column indices
+  const getColIndex = (headerName) => {
+    const index = headers.indexOf(headerName);
+    return index >= 0 ? index + 1 : null; // +1 because Excel is 1-based
+  };
+  
+  const ratePerPieceCol = getColIndex('Rate per piece');
+  const quantityCol = getColIndex('Quantity');
+  const amountCol = getColIndex('Amount');
+  
+  // Add formulas for Rate per piece column if all required columns exist
+  if (ratePerPieceCol && quantityCol && amountCol) {
+    const ratePerPieceColLetter = getColLetterFromNum(ratePerPieceCol);
+    const quantityColLetter = getColLetterFromNum(quantityCol);
+    const amountColLetter = getColLetterFromNum(amountCol);
+    
+    // Add formula for each data row (starting from row 2, row 1 is header)
+    for (let i = 0; i < dataRowCount; i++) {
+      const rowNum = i + 2; // +2 because row 1 is header
+      const cellAddress = `${ratePerPieceColLetter}${rowNum}`;
+      
+      // Formula: IF(Quantity<>0, Amount/Quantity, 0)
+      const formula = `IF(${quantityColLetter}${rowNum}<>0,${amountColLetter}${rowNum}/${quantityColLetter}${rowNum},0)`;
+      
+      if (!sheet[cellAddress]) {
+        sheet[cellAddress] = {};
+      }
+      sheet[cellAddress].f = formula;
+    }
+  }
+  
+  return sheet;
+}
+
+/**
  * Find column index by header name
  */
 function findColumnIndex(ws, headerName) {
@@ -2393,7 +2579,9 @@ async function processMacros(rawFileBuffer, skuFileBuffer, brandName, date, skuD
     // }
     
     const pivotSheet = XLSX.utils.json_to_sheet(pivotData);
-    
+    // Add formulas for calculated columns
+    const pivotHeaders = Object.keys(pivotData[0] || {});
+    addFormulasToPivotSheet(pivotSheet, pivotData, pivotHeaders);
     XLSX.utils.book_append_sheet(outputWorkbook, pivotSheet, 'amazon-b2c-pivot');
     
     // ============================================================
@@ -2404,8 +2592,10 @@ async function processMacros(rawFileBuffer, skuFileBuffer, brandName, date, skuD
     // Build array of arrays: [headers, ...dataRows]
     const tallyReadySheetData = [tallyReadyResult.headers, ...tallyReadyResult.data];
     const tallyReadySheet = XLSX.utils.aoa_to_sheet(tallyReadySheetData);
+    // Add formulas for calculated columns
+    addFormulasToTallySheet(tallyReadySheet, tallyReadyResult.headers, tallyReadyResult.data.length);
     XLSX.utils.book_append_sheet(outputWorkbook, tallyReadySheet, 'tally ready');
-    console.log(`✓ Added tally ready sheet with ${tallyReadyResult.data.length} rows`);
+    console.log(`✓ Added tally ready sheet with ${tallyReadyResult.data.length} rows and formulas`);
 
         // ============================================================
     // STEP 5.6: CREATE HSN SAC READY SHEET
@@ -2425,12 +2615,15 @@ async function processMacros(rawFileBuffer, skuFileBuffer, brandName, date, skuD
     // Build array of arrays: [headers, ...dataRows]
     const shippingtallyReadySheetData = [shippingtallyReadyResult.headers, ...shippingtallyReadyResult.data];
     const shippingtallyReadySheet = XLSX.utils.aoa_to_sheet(shippingtallyReadySheetData);
+    // Add formulas for calculated columns (if any)
+    addFormulasToTallySheet(shippingtallyReadySheet, shippingtallyReadyResult.headers, shippingtallyReadyResult.data.length);
     XLSX.utils.book_append_sheet(outputWorkbook, shippingtallyReadySheet, 'shipping tally ready');
-    console.log(`✓ Added shipping tally ready sheet with ${shippingtallyReadyResult.data.length} rows`);
+    console.log(`✓ Added shipping tally ready sheet with ${shippingtallyReadyResult.data.length} rows and formulas`);
 
 
-    // Report1 is same as Pivot but values only
+    // Report1 is same as Pivot but values only (keep formulas for transparency)
     const report1Sheet = XLSX.utils.json_to_sheet(pivotData);
+    addFormulasToPivotSheet(report1Sheet, pivotData, pivotHeaders);
     XLSX.utils.book_append_sheet(outputWorkbook, report1Sheet, 'Report1');
 
     // ============================================================
@@ -2438,142 +2631,10 @@ async function processMacros(rawFileBuffer, skuFileBuffer, brandName, date, skuD
     // ============================================================
 // Step 6: Add amazon-b2c-process1 sheet to output workbook
 console.log('Step 6: Add amazon-b2c-process1 sheet to output workbook');
-console.log(`Total headers count: ${allHeaders.length}`);
-
-// 🔹 NEW APPROACH: Use aoa_to_sheet (array of arrays) instead of json_to_sheet
-// This gives us complete control over every cell and prevents column truncation
-// Ensure every row has all headers, even if missing in worksheet
-process1Json = process1Json.map(row => {
-  const newRow = { ...row };
-  allHeaders.forEach(header => {
-    if (!(header in newRow)) {
-      newRow[header] = ''; // add empty string for missing columns
-    }
-  });
-  return newRow;
-});
-
-// Build array of arrays: [headers, ...dataRows]
-// Each row is an array with values in the exact order of allHeaders
-const sheetData = [];
-// First row: headers
-sheetData.push([...allHeaders]); // Create a copy to avoid mutation
-
-// Subsequent rows: data values in the same order as headers
-process1Json.forEach(row => {
-  const rowArray = allHeaders.map(header => {
-    const value = row[header];
-    // Handle null/undefined - convert to empty string
-    if (value === null || value === undefined) {
-      return '';
-    }
-    return value;
-  });
-  // Ensure rowArray has exactly allHeaders.length elements
-  while (rowArray.length < allHeaders.length) {
-    rowArray.push('');
-  }
-  sheetData.push(rowArray);
-});
-
-// 🔹 CRITICAL FIX: Ensure ALL columns are explicitly represented in the first data row
-// XLSX may truncate trailing columns if they're completely empty, so we ensure
-// at least the first data row has explicit values (even if empty strings) for all columns
-if (sheetData.length > 1 && allHeaders.length > 0) {
-  const firstDataRow = sheetData[1];
-  // Ensure first data row has exactly allHeaders.length elements
-  for (let i = 0; i < allHeaders.length; i++) {
-    if (firstDataRow[i] === undefined || firstDataRow[i] === null) {
-      firstDataRow[i] = ''; // Explicitly set empty string
-    }
-  }
-  // Ensure array length matches header count
-  if (firstDataRow.length < allHeaders.length) {
-    while (firstDataRow.length < allHeaders.length) {
-      firstDataRow.push(''); // Add empty strings for missing columns
-    }
-  }
-  console.log(`✓ Ensured first data row has ${firstDataRow.length} columns (expected ${allHeaders.length})`);
-}
-
-console.log(`✓ Built sheet data: ${sheetData.length} rows (1 header + ${sheetData.length - 1} data rows), ${allHeaders.length} columns`);
-
-// Create sheet from array of arrays - this preserves ALL columns
-const process1Sheet = XLSX.utils.aoa_to_sheet(sheetData);
-
-// Verify the sheet was created correctly
-const sheetRange = XLSX.utils.decode_range(process1Sheet['!ref']);
-const actualColCount = sheetRange.e.c + 1; // +1 because column index is 0-based
-const actualRowCount = sheetRange.e.r + 1; // +1 because row index is 0-based
-
-console.log(`✓ Sheet created with range: ${process1Sheet['!ref']}`);
-console.log(`✓ Sheet has ${actualColCount} columns (expected ${allHeaders.length})`);
-console.log(`✓ Sheet has ${actualRowCount} rows (expected ${sheetData.length})`);
-
-if (actualColCount !== allHeaders.length) {
-  console.error(`❌ ERROR: Column count mismatch! Expected ${allHeaders.length}, got ${actualColCount}`);
-  console.error(`Missing columns: ${allHeaders.length - actualColCount}`);
-  
-  // Log which headers are actually present
-  const presentHeaders = [];
-  for (let i = 0; i < actualColCount; i++) {
-    const colLetter = XLSX.utils.encode_col(i);
-    const headerCellRef = `${colLetter}1`;
-    const cell = process1Sheet[headerCellRef];
-    presentHeaders.push(cell ? cell.v : `[Missing at col ${i}]`);
-  }
-  console.error(`Present headers (${presentHeaders.length}):`, presentHeaders.slice(-10)); // Last 10
-  console.error(`Expected last 10 headers:`, allHeaders.slice(-10));
-  
-  // Force the range to include all columns
-  const endCol = XLSX.utils.encode_col(allHeaders.length - 1);
-  const endRow = sheetData.length;
-  process1Sheet['!ref'] = `A1:${endCol}${endRow}`;
-  console.log(`✓ Forced range to: ${process1Sheet['!ref']}`);
-  
-  // Manually ensure all header cells exist
-  allHeaders.forEach((header, colIndex) => {
-    const colLetter = XLSX.utils.encode_col(colIndex);
-    const headerCellRef = `${colLetter}1`;
-    if (!process1Sheet[headerCellRef]) {
-      process1Sheet[headerCellRef] = { t: 's', v: header };
-      console.log(`✓ Created missing header cell: ${headerCellRef} = "${header}"`);
-    } else {
-      // Ensure header value is correct
-      process1Sheet[headerCellRef].v = header;
-    }
-  });
-  
-  // Ensure at least first data row has all columns
-  if (sheetData.length > 1) {
-    allHeaders.forEach((header, colIndex) => {
-      const colLetter = XLSX.utils.encode_col(colIndex);
-      const cellRef = `${colLetter}2`;
-      if (!process1Sheet[cellRef]) {
-        process1Sheet[cellRef] = { t: 's', v: '' };
-      }
-    });
-  }
-  
-  // Re-verify after fix
-  const newRange = XLSX.utils.decode_range(process1Sheet['!ref']);
-  const newColCount = newRange.e.c + 1;
-  console.log(`✓ After fix: Sheet has ${newColCount} columns (expected ${allHeaders.length})`);
-} else {
-  console.log(`✓ All ${allHeaders.length} columns are present!`);
-  // Log last 5 headers to verify
-  const lastHeaders = [];
-  for (let i = Math.max(0, allHeaders.length - 5); i < allHeaders.length; i++) {
-    const colLetter = XLSX.utils.encode_col(i);
-    const headerCellRef = `${colLetter}1`;
-    const cell = process1Sheet[headerCellRef];
-    lastHeaders.push(cell ? cell.v : `[Missing]`);
-  }
-  console.log(`✓ Last 5 headers verified:`, lastHeaders);
-}
-
+// Convert ExcelJS worksheet to XLSX format with formulas preserved
+const process1Sheet = excelJSToXLSXWithFormulas(ws);
 XLSX.utils.book_append_sheet(outputWorkbook, process1Sheet, 'amazon-b2c-process1');
-console.log(`✓ Added amazon-b2c-process1 sheet with ${process1Json.length} rows`);     
+console.log(`✓ Added amazon-b2c-process1 sheet with formulas preserved`);     
     // ============================================================
     // STEP 7: ADD SOURCE-SKU SHEET TO OUTPUT WORKBOOK
     // ============================================================
