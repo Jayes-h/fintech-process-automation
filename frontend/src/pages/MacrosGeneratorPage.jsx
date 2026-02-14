@@ -95,6 +95,11 @@ const MacrosGeneratorPage = () => {
       
   };
 
+  const isBlinkitPortal = () => {
+    const portalName = selectedPortal?.name || selectedPortal?.sellerPortalName || '';
+    return portalName.toLowerCase() === 'blinkit';
+  };
+
 
   // SKU data
   const [skus, setSkus] = useState([]);
@@ -1690,7 +1695,7 @@ const MacrosGeneratorPage = () => {
                 </Row>
               </>
             )}
-            {(isAmazonPortal() || isFlipkartPortal() || isMyntraPortal()) && (
+            {(isAmazonPortal() || isFlipkartPortal() || isMyntraPortal() || isBlinkitPortal()) && (
                 <>
                 <Row>
                   <Col md={12}>
@@ -1809,7 +1814,7 @@ const MacrosGeneratorPage = () => {
               !year || 
               (isAmazonPortal() && !fileType) ||
               (isMyntraPortal() && (!rtoFile || !packedFile || !rtFile)) ||
-              (!isMyntraPortal() && !rawFile)
+              ((!isMyntraPortal()) && !rawFile)
             }
           >
             {loading ? (

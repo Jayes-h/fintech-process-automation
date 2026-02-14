@@ -7,7 +7,7 @@ const api = axios.create({
   headers: {
     'Content-Type': 'application/json',
     'ngrok-skip-browser-warning': true,
-
+    
   }
 });
 
@@ -205,14 +205,17 @@ export const macrosApi = {
         fileType === 'B2B'
           ? '/macros-b2b/generate'
           : '/macros/generate';
-    } else if (portalName === 'Myntra') {
+    } else if (portalName === 'MYNTRA') {
       console.log("myntra");
       // Myntra needs 3 files - handled separately
       endpoint = '/macros-myntra/generate';
+    } else if (portalName === 'BLINKIT') {
+      console.log("blinkit");
+      endpoint = '/macros-blinkit/generate';
     } else {
       console.log("flipkart");
       // Flipkart & others (no B2B/B2C logic)
-      endpoint = 'macros-flipkart/generate';
+      endpoint = '/macros-flipkart/generate';
     }
   
     // Debug log
@@ -298,6 +301,12 @@ export const macrosApi = {
     } else if (portalName === 'Myntra') {
       console.log("portal name from download api", portalName);
       const response = await api.get(`/macros-myntra/download/combined/${fileId}`, {
+        responseType: 'blob'
+      });
+      return response.data;
+    } else if (portalName === 'Blinkit') {
+      console.log("portal name from download api", portalName);
+      const response = await api.get(`/macros-blinkit/download/combined/${fileId}`, {
         responseType: 'blob'
       });
       return response.data;
