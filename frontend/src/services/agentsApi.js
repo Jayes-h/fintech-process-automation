@@ -212,6 +212,9 @@ export const macrosApi = {
     } else if (portalName === 'BLINKIT') {
       console.log("blinkit");
       endpoint = '/macros-blinkit/generate';
+    } else if (portalName === 'FIRSTCRY') {
+      console.log("firstcry");
+      endpoint = '/macros-firstcry/generate';
     } else {
       console.log("flipkart");
       // Flipkart & others (no B2B/B2C logic)
@@ -307,6 +310,12 @@ export const macrosApi = {
     } else if (portalName === 'Blinkit') {
       console.log("portal name from download api", portalName);
       const response = await api.get(`/macros-blinkit/download/combined/${fileId}`, {
+        responseType: 'blob'
+      });
+      return response.data;
+    } else if (portalName === 'FirstCry') {
+      console.log("portal name from download api", portalName);
+      const response = await api.get(`/macros-firstcry/download/combined/${fileId}`, {
         responseType: 'blob'
       });
       return response.data;

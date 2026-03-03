@@ -26,6 +26,7 @@ app.use('/api/macros-b2b', require('./routes/macrosRoutesAmazonB2B'));
 app.use('/api/macros-flipkart', require('./routes/macrosRoutesFlipkart'));
 app.use('/api/macros-myntra', require('./routes/macrosRoutesMyntra'));
 app.use('/api/macros-blinkit', require('./routes/macrosRoutesBlinkit'));
+app.use('/api/macros-firstcry', require('./routes/macrosRoutesFirstCry'));
 app.use('/api/brands', require('./routes/brandsRoutes'));
 app.use('/api/seller-portals', require('./routes/sellerPortalsRoutes'));
 app.use('/api/sku', require('./routes/skuRoutes'));

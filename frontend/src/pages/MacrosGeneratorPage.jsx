@@ -79,25 +79,36 @@ const MacrosGeneratorPage = () => {
 
   // Check if selected portal is Amazon
   const isAmazonPortal = () => {
+    console.log("1");
     const portalName = selectedPortal?.name || selectedPortal?.sellerPortalName || '';
     return portalName.toLowerCase() === 'amazon';
   };
 
   // Check if selected portal is Flipkart
   const isFlipkartPortal = () => {
+    console.log("11");
     const portalName = selectedPortal?.name || selectedPortal?.sellerPortalName || '';
     return portalName.toLowerCase() === 'flipkart';
   };
 
   const isMyntraPortal = () => {
+    console.log("111");
     const portalName = selectedPortal?.name || selectedPortal?.sellerPortalName || '';
     return portalName.toLowerCase() === 'myntra';
       
   };
 
   const isBlinkitPortal = () => {
+    console.log("1111");
     const portalName = selectedPortal?.name || selectedPortal?.sellerPortalName || '';
     return portalName.toLowerCase() === 'blinkit';
+  };
+
+  const isFirstCryPortal = () => {
+    const portalName = selectedPortal?.name || selectedPortal?.sellerPortalName || '';
+    console.log("portalName.toLowerCase() === 'firstcry'",portalName.toLowerCase() === 'firstcry');
+
+    return portalName.toLowerCase() === 'firstcry';
   };
 
 
@@ -191,15 +202,15 @@ const MacrosGeneratorPage = () => {
     }
   };
 
-  const handleDownloadCombined = async (fileId, portalName, date, fileType) => {
+  const handleDownloadCombined = async (fileId, portalName, date, fileType, brandName) => {
     try {
       setLoading(true);
       setError(null);
-      const blob = await macrosApi.downloadCombined(fileId,portalName, fileType);
+      const blob = await macrosApi.downloadCombined(fileId,portalName, fileType, brandName);
       if (!blob || blob.size === 0) {
         throw new Error('Received empty file');
       }
-      downloadBlob(blob, `Macros_${portalName}_${date}.xlsx`);
+      downloadBlob(blob, `Macros_${brandName}_${portalName}_${fileType}_${date}.xlsx`);
       setSuccess('Macros file downloaded successfully! Contains Amazon B2C Process1 and Amazon B2C Pivot sheets.');
     } catch (err) {
       setError(err.response?.data?.message || err.message || 'Failed to download combined file');
@@ -1177,7 +1188,7 @@ const MacrosGeneratorPage = () => {
                               <Button
                                 variant="primary"
                                 size="sm"
-                                onClick={(e) => { e.stopPropagation(); handleDownloadCombined(file.id, portalName, file.date, file.fileType); }}
+                                onClick={(e) => { e.stopPropagation(); handleDownloadCombined(file.id, portalName, file.date, file.fileType, file.brandName); }}
                                 disabled={loading}
                                 title="Download Amazon B2C Process1 and Amazon B2C Pivot as single Excel file with two sheets"
                               >
@@ -1695,7 +1706,7 @@ const MacrosGeneratorPage = () => {
                 </Row>
               </>
             )}
-            {(isAmazonPortal() || isFlipkartPortal() || isMyntraPortal() || isBlinkitPortal()) && (
+            {(isAmazonPortal() || isFlipkartPortal() || isMyntraPortal() || isBlinkitPortal() || isFirstCryPortal()) && (
                 <>
                 <Row>
                   <Col md={12}>
