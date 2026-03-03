@@ -493,6 +493,7 @@ const pivotMap = {};
 //     row['Final Invoice No.'] || '',
 //     row['Ship To State Tally Ledger'] || '',
 //     row['FG'] || ''
+
 //   ].join('|');
 
   const pivotData = filteredRows.map(row => ({
@@ -751,21 +752,30 @@ XLSX.utils.book_append_sheet(
 
 const gstrMap = {};
 
-filteredRows.forEach(row => {
+filteredRows.forEach((row) => {
 
-  const key = [
-    row['Seller Gstin'] || '',
-    row['Transaction Type'] || '',
-    row['Hsn/sac'] || '',
-    row['Final Tax rate'] || 0
-  ].join('|');
+  // ---- Safe String Handling ----
+  const sellerGstin = String(row['Seller Gstin'] || '').trim();
+  const hsn = String(row['Hsn/sac'] || '').trim();
 
+  // ---- Calculate Total Tax Rate ----
+  const totalRate =
+    Number(row['Cgst Rate'] || 0) +
+    Number(row['Sgst Rate'] || 0) +
+    Number(row['Igst Rate'] || 0);
+
+  // Fix floating precision issues like 18 vs 18.0000001
+  const normalizedRate = Number(totalRate.toFixed(2));
+
+  // ---- Create Grouping Key ----
+  const key = `${sellerGstin}|${hsn}|${normalizedRate}`;
+
+  // ---- Create Group If Not Exists ----
   if (!gstrMap[key]) {
     gstrMap[key] = {
-      'Seller Gstin': row['Seller Gstin'] || '',
-      'Transaction type': row['Transaction Type'] || '',
-      'Hsn/sac': row['Hsn/sac'] || '',
-      'Rate': Number(row['Cgst Rate'] || 0) + Number(row['Sgst Rate'] || 0) + Number(row['Igst Rate'] || 0),
+      'Seller Gstin': sellerGstin,
+      'Hsn/sac': hsn,
+      'Rate': normalizedRate,
       'Quantity': 0,
       'Final Taxable Sales Value': 0,
       'Final CGST Tax': 0,
@@ -774,6 +784,7 @@ filteredRows.forEach(row => {
     };
   }
 
+  // ---- Add Values To Group ----
   gstrMap[key]['Quantity'] += Number(row['Quantity'] || 0);
   gstrMap[key]['Final Taxable Sales Value'] += Number(row['Final Taxable Sales Value'] || 0);
   gstrMap[key]['Final CGST Tax'] += Number(row['Final CGST Tax'] || 0);
@@ -782,20 +793,40 @@ filteredRows.forEach(row => {
 
 });
 
+// Convert map to array
 const gstrData = Object.values(gstrMap);
 
 console.log("GSTR HSN Records:", gstrData.length);
 
-// Create sheet
+// ==================================
+// CREATE EXCEL SHEET
+// ==================================
+
 const gstrSheet = XLSX.utils.json_to_sheet(gstrData);
 
-// Append to workbook
-XLSX.utils.book_append_sheet(
-  pivotWorkbook,
-  gstrSheet,
-  'amazon-b2c-gstr-hsn'
-);
+// Optional: Set column order properly
+const columnOrder = [
+  'Seller Gstin',
+  'Hsn/sac',
+  'Rate',
+  'Quantity',
+  'Final Taxable Sales Value',
+  'Final CGST Tax',
+  'Final SGST Tax',
+  'Final IGST Tax'
+];
 
+XLSX.utils.sheet_add_aoa(gstrSheet, [columnOrder], { origin: "A1" });
+
+// ==================================
+// APPEND TO WORKBOOK
+// ==================================
+
+XLSX.utils.book_append_sheet(
+  pivotWorkbook,              // your existing workbook
+  gstrSheet,
+  'amazon-b2c-gstr-hsn'       // sheet name
+);
     // ================================
     // RETURN STRUCTURE EXPECTED BY CONTROLLER
     // ================================
