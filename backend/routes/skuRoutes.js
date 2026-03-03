@@ -32,6 +32,9 @@ router.post('/upload', upload.single('file'), skuController.uploadSKUFile);
 // Update SKU
 router.put('/:id', skuController.updateSKU);
 
+// Bulk delete SKUs by brand and sales portal
+router.delete('/bulk/by-brand-portal', skuController.bulkDeleteByBrandAndPortal);
+
 // Delete SKU
 router.delete('/:id', skuController.deleteSKU);
 

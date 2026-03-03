@@ -272,6 +272,59 @@ exports.updateSKU = async (req, res, next) => {
   }
 };
 
+
+/**
+ * Bulk delete SKUs by brandId and salesPortalId
+ * DELETE /api/sku/bulk/by-brand-portal
+ */
+exports.bulkDeleteByBrandAndPortal = async (req, res, next) => {
+  try {
+    const { brandId, salesPortalId } = req.body;
+
+    if (!brandId || !salesPortalId) {
+      return res.status(400).json({
+        success: false,
+        message: 'brandId and salesPortalId are required'
+      });
+    }
+
+    // Optional: Validate brand exists
+    const brand = await Brands.findByPk(brandId);
+    if (!brand) {
+      return res.status(400).json({
+        success: false,
+        message: 'Brand not found'
+      });
+    }
+
+    // Optional: Validate portal exists
+    const portal = await SellerPortals.findByPk(salesPortalId);
+    if (!portal) {
+      return res.status(400).json({
+        success: false,
+        message: 'Sales portal not found'
+      });
+    }
+
+    // Delete all matching SKUs
+    const deletedCount = await SKU.destroy({
+      where: {
+        brandId,
+        salesPortalId
+      }
+    });
+
+    return res.json({
+      success: true,
+      message: `${deletedCount} SKUs deleted successfully`,
+      deletedCount
+    });
+
+  } catch (error) {
+    next(error);
+  }
+};
+
 /**
  * Delete SKU
  * DELETE /api/sku/:id
