@@ -156,17 +156,28 @@ if (useInventory === true) {
 }
 
 // ================================
+// GET MONTH NUMBER FROM DATE
+// ================================
+
+const monthNumber = (() => {
+  const d = new Date(date);
+  const m = d.getMonth() + 1;
+  return String(m).padStart(2, '0'); // 01,02,03...
+})();
+
+// ================================
 // STEP 4.4: MAP STATE CONFIG DATA
 // ================================
 
 if (Array.isArray(stateConfigData) && stateConfigData.length > 0) {
 
-  // Create lookup map (case-insensitive)
+  // Create lookup map
   const stateMap = {};
 
   stateConfigData.forEach(item => {
     if (item.States) {
       const key = item.States.toString().trim().toLowerCase();
+
       stateMap[key] = {
         ledger: item['Amazon Pay Ledger'] || null,
         invoice: item['Invoice No.'] || null
@@ -174,29 +185,52 @@ if (Array.isArray(stateConfigData) && stateConfigData.length > 0) {
     }
   });
 
+  // Extract month number from input date
+  const monthNumber = (() => {
+    const d = new Date(date);
+    const m = d.getMonth() + 1;
+    return String(m).padStart(2, '0');
+  })();
+
   // Map each row
   filteredRows.forEach(row => {
 
     const shipState = row['Ship To State'];
 
     if (shipState) {
+
       const lookupKey = shipState.toString().trim().toLowerCase();
 
       if (stateMap[lookupKey]) {
+
         row['Ship To State Tally Ledger'] = stateMap[lookupKey].ledger;
-        row['Final Invoice No.'] = stateMap[lookupKey].invoice;
+
+        const baseInvoice = stateMap[lookupKey].invoice;
+
+        if (baseInvoice) {
+          row['Final Invoice No.'] = `${baseInvoice}-${monthNumber}`;
+        } else {
+          row['Final Invoice No.'] = null;
+        }
+
       } else {
+
         row['Ship To State Tally Ledger'] = null;
         row['Final Invoice No.'] = null;
+
       }
+
     } else {
+
       row['Ship To State Tally Ledger'] = null;
       row['Final Invoice No.'] = null;
+
     }
 
   });
 
 }
+
 
 // ==================================
 // STEP 4.5: MAP FG FROM sourceSheetData (DEBUG MODE)
@@ -421,17 +455,17 @@ filteredRows.forEach((rowData, rowIndex) => {
 
   // 4️⃣ Final CGST Tax
   worksheet.getCell(`${finalCgstCol}${excelRowNumber}`).value = {
-    formula: `IF(${shipFromCol}${excelRowNumber}=${shipToCol}${excelRowNumber},${finalTaxableSalesCol}${excelRowNumber}*${finalTaxRateCol}${excelRowNumber},0)`
+    formula: `IF(${shipFromCol}${excelRowNumber}=${shipToCol}${excelRowNumber},${finalTaxableSalesCol}${excelRowNumber}*${cgstRateCol}${excelRowNumber},0)`
   };
 
   // 5️⃣ Final SGST Tax
   worksheet.getCell(`${finalSgstCol}${excelRowNumber}`).value = {
-    formula: `IF(${shipFromCol}${excelRowNumber}=${shipToCol}${excelRowNumber},${finalTaxableSalesCol}${excelRowNumber}*${finalTaxRateCol}${excelRowNumber},0)`
+    formula: `IF(${shipFromCol}${excelRowNumber}=${shipToCol}${excelRowNumber},${finalTaxableSalesCol}${excelRowNumber}*${sgstRateCol}${excelRowNumber},0)`
   };
 
   // 6️⃣ Final IGST Tax
   worksheet.getCell(`${finalIgstCol}${excelRowNumber}`).value = {
-    formula: `IF(${shipFromCol}${excelRowNumber}<>${shipToCol}${excelRowNumber},${finalTaxableSalesCol}${excelRowNumber}*${finalTaxRateCol}${excelRowNumber},0)`
+    formula: `IF(${shipFromCol}${excelRowNumber}<>${shipToCol}${excelRowNumber},${finalTaxableSalesCol}${excelRowNumber}*${igstRateCol}${excelRowNumber},0)`
   };
 
   // 7️⃣ Final Shipping CGST
