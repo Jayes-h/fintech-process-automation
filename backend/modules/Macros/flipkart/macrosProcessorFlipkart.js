@@ -560,7 +560,23 @@ async function processFlipkartMacros(rawFileBuffer, skuData, stateConfigData, br
   console.log(`Brand: ${brandName}, Date: ${date}`, "withInventory", withInventory);
 
  
-    // Build SKU lookup map
+  // ==========================
+// Get Month Number from date
+// ==========================
+let monthSuffix = '';
+
+if (date) {
+  const parsedDate = new Date(date);
+
+  if (!isNaN(parsedDate.getTime())) {
+    const month = parsedDate.getMonth() + 1; // JS months start at 0
+    monthSuffix = '-' + String(month).padStart(2, '0'); // -01, -02, -03
+  }
+}
+
+console.log('Month suffix for invoice:', monthSuffix); 
+  
+  // Build SKU lookup map
    
     const skuMap = {};
 
@@ -648,7 +664,7 @@ if (stateConfigData && Array.isArray(stateConfigData)) {
         eventType === 'sale' || eventType === 'return';
 
     const validEventSubType =
-        eventSubType === 'sale' || eventSubType === 'return' || eventSubType === 'return cancellation';
+        eventSubType === 'sale' || eventSubType === 'return';
 
 // if either column is not Sale/Return → skip row
     if ( !validEventSubType) {
@@ -681,7 +697,8 @@ if (stateConfigData && Array.isArray(stateConfigData)) {
     const normalizedDeliveryState = normalizeStateName(customerDeliveryState);
     const stateConfig = stateConfigMap[normalizedDeliveryState] || {};
     const tallyLedgers = stateConfig.tallyLedger || '';
-    const finalInvoiceNo = stateConfig.invoiceNo || '';
+    const baseInvoiceNo = stateConfig.invoiceNo || '';
+    const finalInvoiceNo = baseInvoiceNo ? `${baseInvoiceNo}${monthSuffix}` : '';
 
     // Get raw values
     const priceAfterDiscount = safeNumber(row['Price after discount (Price before discount-Total discount)']);
